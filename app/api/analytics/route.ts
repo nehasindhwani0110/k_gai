@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { 
   generateAdhocQuery, 
-  generateDashboardMetrics 
+  generateDashboardMetrics,
+  generateAdhocQueryWithLangGraphAgent
 } from '@/analytics-engine/services/llm-service';
 import { validateMetadata } from '@/analytics-engine/services/schema-introspection';
 import { validateSQLQuery } from '@/analytics-engine/services/query-executor';
 import { postProcessDashboardMetrics } from '@/analytics-engine/services/query-post-processor';
 import { AnalyticsRequest } from '@/analytics-engine/types';
+import { generateQueryWithPythonAgent } from '@/analytics-engine/services/python-agent-bridge';
 
 export async function POST(request: NextRequest) {
   try {
@@ -37,10 +39,60 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const result = await generateAdhocQuery(
-        body.user_question,
-        body.metadata
-      );
+      // Check if agent-based generation is requested
+      const useAgent = (body as any).use_agent ?? process.env.USE_AGENT_BASED_QUERIES === 'true';
+      const useLangGraph = (body as any).use_langgraph ?? process.env.USE_LANGGRAPH_AGENT === 'true';
+      const connectionString = (body as any).connection_string;
+
+      let result;
+      
+      if (useAgent || useLangGraph) {
+        // Try LangGraph agent first if requested
+        if (useLangGraph) {
+          try {
+            console.log('[API] Using LangGraph agent for query generation');
+            result = await generateAdhocQueryWithLangGraphAgent(
+              body.user_question,
+              body.metadata,
+              connectionString
+            );
+          } catch (error) {
+            console.warn('[API] LangGraph agent failed, trying Python agent:', error);
+            // Fall through to Python agent
+          }
+        }
+        
+        // Use Python agent for SQL databases (or as fallback)
+        if (!result && body.metadata.source_type === 'SQL_DB' && connectionString) {
+          try {
+            console.log('[API] Using Python agent for query generation');
+            result = await generateQueryWithPythonAgent(
+              body.user_question,
+              connectionString,
+              body.metadata
+            );
+          } catch (error) {
+            console.warn('[API] Agent generation failed, falling back to direct LLM:', error);
+            // Fallback to original method
+            result = await generateAdhocQuery(
+              body.user_question,
+              body.metadata
+            );
+          }
+        } else if (!result) {
+          // No agent available, use direct LLM
+          result = await generateAdhocQuery(
+            body.user_question,
+            body.metadata
+          );
+        }
+      } else {
+        // Use original direct LLM method
+        result = await generateAdhocQuery(
+          body.user_question,
+          body.metadata
+        );
+      }
 
       // Validate generated SQL query if it's SQL_QUERY type
       if (result.query_type === 'SQL_QUERY' && !validateSQLQuery(result.query_content)) {

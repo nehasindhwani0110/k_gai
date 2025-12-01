@@ -497,3 +497,51 @@ export async function generateDashboardMetrics(
   return JSON.parse(content) as DashboardMetricsResponse;
 }
 
+/**
+ * Agent-based query generation using LangGraph
+ * 
+ * Uses the QueryAgent for multi-step query generation with validation and refinement
+ */
+export async function generateAdhocQueryWithLangGraphAgent(
+  userQuestion: string,
+  metadata: DataSourceMetadata,
+  connectionString?: string
+): Promise<AdhocQueryResponse> {
+  try {
+    // Dynamic import to avoid errors if LangGraph not installed
+    const { QueryAgent } = await import('../agents/query-agent');
+    const agent = new QueryAgent();
+
+    console.log('[LLM-SERVICE] Using LangGraph agent for query generation');
+
+    // Execute agent workflow
+    const query = await agent.execute(userQuestion, metadata, connectionString);
+
+    // Generate insight summary
+    const insightPrompt = `Explain what this SQL query does and what insights it provides:\n\n${query}\n\nQuestion: ${userQuestion}`;
+    
+    const insightResponse = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
+      messages: [
+        {
+          role: 'user',
+          content: insightPrompt,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 150,
+    });
+
+    return {
+      query_type: 'SQL_QUERY',
+      query_content: query,
+      visualization_type: 'auto',
+      insight_summary: insightResponse.choices[0]?.message?.content || 'Query generated using LangGraph agent',
+    };
+  } catch (error) {
+    console.error('[LLM-SERVICE] LangGraph agent failed, falling back to direct LLM:', error);
+    // Fallback to original method
+    return generateAdhocQuery(userQuestion, metadata);
+  }
+}
+

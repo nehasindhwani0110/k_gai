@@ -35,6 +35,11 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
 
     setLoading(true);
     try {
+      // Check if agents should be used (from environment or metadata)
+      const useLangGraph = process.env.NEXT_PUBLIC_USE_LANGGRAPH_AGENT === 'true' || metadata?.use_langgraph;
+      const useAgent = process.env.NEXT_PUBLIC_USE_AGENT_BASED_QUERIES === 'true' || metadata?.use_agent;
+      const connectionString = metadata?.connection_string || process.env.NEXT_PUBLIC_DB_CONNECTION_STRING;
+
       const response = await fetch('/api/analytics', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -42,6 +47,9 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
           mode: 'ADHOC_QUERY',
           metadata,
           user_question: question,
+          ...(useLangGraph && { use_langgraph: true }),
+          ...(useAgent && { use_agent: true }),
+          ...(connectionString && { connection_string: connectionString }),
         }),
       });
 

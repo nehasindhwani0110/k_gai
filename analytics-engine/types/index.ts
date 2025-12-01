@@ -53,5 +53,7 @@ export interface AnalyticsRequest {
   metadata: DataSourceMetadata;
   user_question?: string;
   school_id?: string;
+  use_agent?: boolean; // Use agent-based query generation
+  connection_string?: string; // Required for agent-based SQL queries
 }
 

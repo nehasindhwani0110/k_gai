@@ -6,3 +6,8 @@ pymysql>=1.1.0
 flask>=3.0.0
 flask-cors>=4.0.0
 
+# LangChain dependencies for Agent-based query generation (optional)
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-community>=0.0.20
+

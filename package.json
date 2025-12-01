@@ -9,7 +9,9 @@
     "lint": "next lint",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "python:backend": "cd analytics-engine/python-backend && python api_server.py",
+    "python:install": "cd analytics-engine/python-backend && pip install -r requirements.txt"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -28,7 +30,12 @@
     "recharts": "^2.10.3",
     "xlsx": "^0.18.5",
     "zod": "^3.22.4",
-    "bcryptjs": "^2.4.3"
+    "bcryptjs": "^2.4.3",
+    "@langchain/langgraph": "^0.0.20",
+    "@langchain/core": "^0.1.0",
+    "@langchain/openai": "^0.0.14",
+    "langchain": "^0.1.0",
+    "@langchain/community": "^0.0.20"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
