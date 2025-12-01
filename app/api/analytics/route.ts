@@ -44,8 +44,16 @@ export async function POST(request: NextRequest) {
 
       // Validate generated SQL query if it's SQL_QUERY type
       if (result.query_type === 'SQL_QUERY' && !validateSQLQuery(result.query_content)) {
+        console.error('Query validation failed:', {
+          query_type: result.query_type,
+          query_content: result.query_content,
+          query_length: result.query_content?.length
+        });
         return NextResponse.json(
-          { error: 'Generated query failed security validation' },
+          { 
+            error: 'Generated query failed security validation',
+            details: `Query: ${result.query_content?.substring(0, 200)}...`
+          },
           { status: 400 }
         );
       }
@@ -66,8 +74,16 @@ export async function POST(request: NextRequest) {
       // Validate all generated queries
       for (const metric of processedMetrics) {
         if (metric.query_type === 'SQL_QUERY' && !validateSQLQuery(metric.query_content)) {
+          console.error('Query validation failed for metric:', {
+            metric_name: metric.metric_name,
+            query_content: metric.query_content,
+            query_length: metric.query_content?.length
+          });
           return NextResponse.json(
-            { error: `Generated query for metric "${metric.metric_name}" failed security validation` },
+            { 
+              error: `Generated query for metric "${metric.metric_name}" failed security validation`,
+              details: `Query: ${metric.query_content?.substring(0, 200)}...`
+            },
             { status: 400 }
           );
         }

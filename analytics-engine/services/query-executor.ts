@@ -1,24 +1,77 @@
 import { QueryType, SourceType } from '../types';
 import { executeCSVQuery } from './csv-query-executor';
+import { translateCanonicalQuery } from './canonical-mapping-service';
 
 /**
  * Executes SQL query on database
- * This would connect to the database and execute the query
+ * Uses Python backend for SQL execution via SQLAlchemy
  */
 export async function executeSQLQuery(
   connectionString: string,
-  query: string
+  query: string,
+  dataSourceId?: string
 ): Promise<any[]> {
-  // In a real implementation, this would:
-  // 1. Connect to the database using Prisma or raw SQL client
-  // 2. Execute the query
-  // 3. Return results as array of objects
-  // 4. Handle errors appropriately
+  // Validate query before execution
+  if (!validateSQLQuery(query)) {
+    throw new Error('Query failed security validation. Only SELECT queries are allowed.');
+  }
 
-  // TODO: Implement actual SQL execution
-  // This should use Prisma.$queryRaw or a database client library
+  // If dataSourceId is provided, translate canonical query to source-specific query
+  let finalQuery = query;
+  if (dataSourceId) {
+    try {
+      finalQuery = await translateCanonicalQuery(dataSourceId, query);
+      console.log('[QUERY] Translated canonical query:', {
+        original: query.substring(0, 100),
+        translated: finalQuery.substring(0, 100),
+      });
+    } catch (error) {
+      console.error('Query translation failed, using original query:', error);
+      // Continue with original query if translation fails
+    }
+  }
+
+  // Call Python backend for SQL execution
+  const pythonBackendUrl = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
   
-  throw new Error('SQL query execution not yet implemented. Use Prisma or database client.');
+  try {
+    console.log(`[QUERY] Executing SQL query via Python backend: ${pythonBackendUrl}/execute`);
+    
+    const response = await fetch(`${pythonBackendUrl}/execute`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        connection_string: connectionString,
+        query: finalQuery,
+      }),
+    });
+
+    if (!response.ok) {
+      let errorData: any;
+      try {
+        errorData = await response.json();
+      } catch {
+        const errorText = await response.text();
+        errorData = { error: errorText };
+      }
+      throw new Error(`Python backend error: ${response.status} - ${errorData.error || errorData.details || 'Unknown error'}`);
+    }
+
+    const result = await response.json();
+    
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log(`[QUERY] Query executed successfully: ${result.row_count || result.results?.length || 0} rows returned`);
+    return result.results || [];
+    
+  } catch (error) {
+    console.error('[QUERY] SQL execution error:', error);
+    throw error;
+  }
 }
 
 /**
@@ -51,22 +104,33 @@ export async function executeSQLOnCSV(
  * Validates SQL query for security
  */
 export function validateSQLQuery(query: string): boolean {
-  const upperQuery = query.toUpperCase().trim();
+  if (!query || typeof query !== 'string') {
+    return false;
+  }
   
-  // Check for dangerous operations
+  // Remove leading/trailing whitespace and newlines
+  const cleanedQuery = query.trim().replace(/^\s+|\s+$/g, '');
+  const upperQuery = cleanedQuery.toUpperCase();
+  
+  // Check for dangerous operations (but allow them in string literals/comments)
   const dangerousKeywords = [
     'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 
     'ALTER', 'TRUNCATE', 'EXEC', 'EXECUTE', 'CALL'
   ];
   
+  // Check for dangerous keywords as standalone words (not inside other words)
   for (const keyword of dangerousKeywords) {
-    if (upperQuery.includes(keyword)) {
+    // Use word boundary regex to match whole words only
+    const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+    if (regex.test(cleanedQuery)) {
+      console.log(`Security validation failed: Found dangerous keyword "${keyword}" in query`);
       return false;
     }
   }
   
-  // Must start with SELECT
+  // Must start with SELECT (after trimming)
   if (!upperQuery.startsWith('SELECT')) {
+    console.log(`Security validation failed: Query does not start with SELECT. Query: ${cleanedQuery.substring(0, 100)}`);
     return false;
   }
   

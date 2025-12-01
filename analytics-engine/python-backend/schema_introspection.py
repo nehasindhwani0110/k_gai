@@ -7,6 +7,95 @@ from sqlalchemy import create_engine, inspect, MetaData, Table
 from sqlalchemy.engine import Engine
 from typing import Dict, List, Optional
 import json
+from urllib.parse import urlparse, urlunparse, quote_plus
+
+
+def _normalize_connection_string(connection_string: str) -> str:
+    """
+    Normalizes a database connection string by properly encoding special characters
+    in the password component.
+    
+    Args:
+        connection_string: Raw connection string (e.g., mysql://user:pass@host/db)
+        
+    Returns:
+        Normalized connection string with properly encoded password
+    """
+    try:
+        # Parse the connection string
+        parsed = urlparse(connection_string)
+        
+        # Extract components
+        scheme = parsed.scheme
+        username = parsed.username
+        password = parsed.password
+        hostname = parsed.hostname
+        port = parsed.port
+        path = parsed.path
+        query = parsed.query
+        
+        # Check if hostname contains @, which indicates password parsing failed
+        # This happens when password contains @ character
+        if hostname and '@' in hostname:
+            # Password contains @, so urlparse split incorrectly
+            # Need to manually parse: user:password@host:port
+            # Example: root:neha@2004@localhost:3306 -> hostname would be "2004@localhost"
+            netloc_parts = parsed.netloc.split('@')
+            if len(netloc_parts) >= 2:
+                # Take everything before last @ as auth, last part as host:port
+                auth_part = '@'.join(netloc_parts[:-1])
+                host_part = netloc_parts[-1]
+                
+                if ':' in auth_part:
+                    username, password = auth_part.split(':', 1)
+                else:
+                    username = auth_part
+                    password = None
+                
+                # Parse host and port from host_part
+                if ':' in host_part:
+                    hostname, port_str = host_part.rsplit(':', 1)
+                    try:
+                        port = int(port_str)
+                    except ValueError:
+                        hostname = host_part
+                        port = None
+                else:
+                    hostname = host_part
+                    port = None
+        
+        # URL-encode the password if it exists and contains special characters
+        if password:
+            # Check if password needs encoding (contains @, :, /, etc.)
+            if any(char in password for char in ['@', ':', '/', '?', '#', '[', ']']):
+                password = quote_plus(password)
+        
+        # Reconstruct the connection string
+        if username and password:
+            netloc = f"{username}:{password}@{hostname}"
+        elif username:
+            netloc = f"{username}@{hostname}"
+        else:
+            netloc = hostname
+        
+        if port:
+            netloc = f"{netloc}:{port}"
+        
+        normalized = urlunparse((scheme, netloc, path, '', query, ''))
+        
+        # Convert mysql:// to mysql+pymysql:// to use pymysql driver
+        if normalized.startswith('mysql://'):
+            normalized = normalized.replace('mysql://', 'mysql+pymysql://', 1)
+            print(f"[SCHEMA] Using pymysql driver for MySQL connection")
+        
+        return normalized
+        
+    except Exception as e:
+        # If parsing fails, try simple replacement approach
+        print(f"[SCHEMA] Warning: Could not parse connection string properly: {e}")
+        if connection_string.startswith('mysql://'):
+            connection_string = connection_string.replace('mysql://', 'mysql+pymysql://', 1)
+        return connection_string
 
 
 def introspect_sql_schema(
@@ -23,7 +112,10 @@ def introspect_sql_schema(
     Returns:
         Dictionary with source_type and tables metadata
     """
-    engine = create_engine(connection_string)
+    # Normalize connection string to handle special characters in password
+    normalized_connection_string = _normalize_connection_string(connection_string)
+    
+    engine = create_engine(normalized_connection_string)
     inspector = inspect(engine)
     
     tables_metadata = []

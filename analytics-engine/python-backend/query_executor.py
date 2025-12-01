@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, text
 from typing import List, Dict, Any
 import pandas as pd
 from csv_processor import execute_csv_query
+from schema_introspection import _normalize_connection_string
 
 
 def execute_sql_query(connection_string: str, query: str) -> List[Dict]:
@@ -22,9 +23,12 @@ def execute_sql_query(connection_string: str, query: str) -> List[Dict]:
     """
     # Validate query (basic security check)
     if not validate_sql_query(query):
-        raise ValueError("Query failed security validation")
+        raise ValueError("Query failed security validation. Only SELECT queries are allowed, and dangerous operations (INSERT, UPDATE, DELETE, DROP, etc.) are blocked.")
     
-    engine = create_engine(connection_string)
+    # Normalize connection string to handle special characters in password
+    normalized_connection_string = _normalize_connection_string(connection_string)
+    
+    engine = create_engine(normalized_connection_string)
     
     try:
         with engine.connect() as conn:
@@ -41,6 +45,7 @@ def execute_sql_query(connection_string: str, query: str) -> List[Dict]:
 def validate_sql_query(query: str) -> bool:
     """
     Validates SQL query for security.
+    Only allows SELECT queries, blocks dangerous operations.
     
     Args:
         query: SQL query string
@@ -48,21 +53,32 @@ def validate_sql_query(query: str) -> bool:
     Returns:
         True if query is safe, False otherwise
     """
-    upper_query = query.upper().strip()
+    import re
     
-    # Check for dangerous operations
+    if not query or not isinstance(query, str):
+        return False
+    
+    # Remove leading/trailing whitespace
+    cleaned_query = query.strip()
+    upper_query = cleaned_query.upper()
+    
+    # Must start with SELECT
+    if not upper_query.startswith('SELECT'):
+        return False
+    
+    # Check for dangerous operations using word boundaries
+    # This prevents false positives like DATE() matching DELETE
     dangerous_keywords = [
         'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE',
         'ALTER', 'TRUNCATE', 'EXEC', 'EXECUTE', 'CALL'
     ]
     
     for keyword in dangerous_keywords:
-        if keyword in upper_query:
+        # Use word boundary regex to match whole words only
+        # \b matches word boundaries, ensuring we don't match partial words
+        pattern = r'\b' + re.escape(keyword) + r'\b'
+        if re.search(pattern, upper_query, re.IGNORECASE):
             return False
-    
-    # Must start with SELECT
-    if not upper_query.startswith('SELECT'):
-        return False
     
     return True
 

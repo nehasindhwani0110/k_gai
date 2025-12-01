@@ -5,7 +5,9 @@ import { toast } from 'react-hot-toast';
 import { AdhocQueryResponse } from '@/analytics-engine/types';
 import VisualizationRenderer from './VisualizationRenderer';
 import AIAnalyticsSuggestions from './AIAnalyticsSuggestions';
+import QueryHistory from './QueryHistory';
 import { autoSelectVisualizationType } from '@/analytics-engine/services/visualization-selector';
+import { VisualizationType } from '@/analytics-engine/types';
 
 interface AdhocQueryProps {
   metadata: any;
@@ -99,15 +101,43 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
 
       const data = await response.json();
       setQueryResults(data.results || []);
+
+      // Save query to history
+      try {
+        await fetch('/api/analytics/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userQuestion: question,
+            queryType: queryData.query_type,
+            queryContent: queryData.query_content,
+            sourceType: metadata?.source_type || 'SQL_DB',
+            filePath: metadata?.file_path || undefined,
+            results: data.results || [],
+          }),
+        });
+      } catch (historyError) {
+        // Don't show error to user - history saving is optional
+        console.error('Failed to save query history:', historyError);
+      }
     } catch (error) {
       console.error('Query execution error:', error);
       toast.error('Failed to execute query. Showing query only.');
     }
   };
 
+  const handleHistorySelect = (query: any) => {
+    setQuestion(query.userQuestion);
+    // Optionally auto-execute the query
+    // You can add logic here to re-execute the query if needed
+  };
+
   return (
     <div className="w-full max-w-6xl mx-auto p-6">
       <h2 className="text-2xl font-bold mb-6">Ask a Question</h2>
+      
+      {/* Query History */}
+      <QueryHistory onQuerySelect={handleHistorySelect} />
       
       {/* AI Analytics Suggestions */}
       <AIAnalyticsSuggestions 

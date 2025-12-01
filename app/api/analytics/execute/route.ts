@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { executeSQLQuery, executeQueryLogic, executeSQLOnCSV } from '@/analytics-engine/services/query-executor';
+import { executeFileQuery } from '@/analytics-engine/services/file-query-executor';
 import { QueryType, SourceType } from '@/analytics-engine/types';
+import * as path from 'path';
 
 interface ExecuteRequest {
   query_type: QueryType;
@@ -8,6 +10,9 @@ interface ExecuteRequest {
   source_type: SourceType;
   connection_string?: string;
   file_path?: string;
+  file_type?: 'CSV' | 'JSON' | 'EXCEL' | 'TXT';
+  data_source_id?: string; // For canonical mapping
+  is_canonical_query?: boolean; // If true, translate query before execution
 }
 
 export async function POST(request: NextRequest) {
@@ -33,14 +38,31 @@ export async function POST(request: NextRequest) {
     let results: any[];
 
     if (body.query_type === 'SQL_QUERY') {
-      // PRIORITY: If file_path is provided, always treat as CSV (regardless of source_type)
-      // This handles cases where source_type might be incorrectly set but file_path exists
+      // PRIORITY: If file_path is provided, execute on file (CSV, JSON, Excel, or Text)
       if (body.file_path) {
         try {
-          console.log('Executing SQL query on CSV file:', body.file_path);
-          results = await executeSQLOnCSV(body.file_path, body.query_content);
+          // Detect file type from extension if not provided
+          let fileType: 'CSV' | 'JSON' | 'EXCEL' | 'TXT' = 'CSV';
+          if (body.file_type) {
+            fileType = body.file_type;
+          } else {
+            const ext = path.extname(body.file_path).toLowerCase();
+            if (ext === '.json') fileType = 'JSON';
+            else if (ext === '.xlsx' || ext === '.xls') fileType = 'EXCEL';
+            else if (ext === '.txt') fileType = 'TXT';
+            else fileType = 'CSV';
+          }
+          
+          console.log(`Executing SQL query on ${fileType} file:`, body.file_path);
+          
+          // Use universal file query executor
+          if (fileType === 'CSV') {
+            results = await executeSQLOnCSV(body.file_path, body.query_content);
+          } else {
+            results = await executeFileQuery(body.file_path, fileType, body.query_content);
+          }
         } catch (error) {
-          console.error('CSV query execution error:', error);
+          console.error('File query execution error:', error);
           throw error;
         }
       } else if (body.source_type === 'CSV_FILE') {
@@ -64,7 +86,22 @@ export async function POST(request: NextRequest) {
             { status: 400 }
           );
         }
-        results = await executeSQLQuery(body.connection_string, body.query_content);
+        // Translate query if it's canonical and data_source_id is provided
+        let queryToExecute = body.query_content;
+        if (body.is_canonical_query && body.data_source_id) {
+          const { translateCanonicalQuery } = await import('@/analytics-engine/services/canonical-mapping-service');
+          queryToExecute = await translateCanonicalQuery(body.data_source_id, body.query_content);
+          console.log('Translated canonical query:', {
+            original: body.query_content,
+            translated: queryToExecute,
+          });
+        }
+        
+        results = await executeSQLQuery(
+          body.connection_string,
+          queryToExecute,
+          body.data_source_id
+        );
       }
     } else if (body.query_type === 'QUERY_LOGIC') {
       if (!body.file_path) {

@@ -14,14 +14,31 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState<DashboardMetric[]>([]);
   const [metricResults, setMetricResults] = useState<Record<string, any[]>>({});
+  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
 
   useEffect(() => {
     loadDashboardMetrics();
   }, [metadata]);
 
+  // Auto-refresh every hour (3600000 ms)
+  useEffect(() => {
+    if (!autoRefreshEnabled) return;
+
+    const intervalId = setInterval(() => {
+      console.log('Auto-refreshing dashboard metrics...');
+      loadDashboardMetrics();
+      setLastRefresh(new Date());
+    }, 3600000); // 1 hour = 3600000 milliseconds
+
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefreshEnabled, metadata]);
+
   const loadDashboardMetrics = async () => {
     setLoading(true);
     try {
+      setLastRefresh(new Date());
       // Validate metadata for CSV files
       if (metadata?.source_type === 'CSV_FILE' && !metadata?.file_path) {
         throw new Error('File path is missing. Please re-upload your CSV file.');
@@ -126,11 +143,56 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
     );
   }
 
+  const formatTimeUntilRefresh = () => {
+    const now = new Date();
+    const timeSinceRefresh = now.getTime() - lastRefresh.getTime();
+    const timeUntilNextRefresh = 3600000 - timeSinceRefresh; // 1 hour in ms
+    
+    if (timeUntilNextRefresh <= 0) return 'Refreshing...';
+    
+    const minutes = Math.floor(timeUntilNextRefresh / 60000);
+    const seconds = Math.floor((timeUntilNextRefresh % 60000) / 1000);
+    return `${minutes}m ${seconds}s`;
+  };
+
+  const handleManualRefresh = () => {
+    loadDashboardMetrics();
+    setLastRefresh(new Date());
+    toast.success('Dashboard refreshed');
+  };
+
   return (
     <div className="w-full max-w-7xl mx-auto p-6">
-      <div className="mb-8">
-        <h2 className="text-4xl font-bold text-gray-800 mb-2">Dashboard Metrics</h2>
-        <p className="text-gray-600">Comprehensive analytics overview</p>
+      <div className="mb-8 flex justify-between items-center">
+        <div>
+          <h2 className="text-3xl font-bold text-gray-800 mb-2">Dashboard Metrics</h2>
+          <p className="text-gray-600">
+            {autoRefreshEnabled ? (
+              <>Auto-refresh enabled • Next refresh in: <span className="font-semibold">{formatTimeUntilRefresh()}</span></>
+            ) : (
+              'Auto-refresh disabled'
+            )}
+          </p>
+        </div>
+        <div className="flex gap-3 items-center">
+          <button
+            onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              autoRefreshEnabled
+                ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+          >
+            {autoRefreshEnabled ? '✓ Auto-refresh ON' : 'Auto-refresh OFF'}
+          </button>
+          <button
+            onClick={handleManualRefresh}
+            disabled={loading}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+          >
+            {loading ? 'Refreshing...' : '🔄 Refresh Now'}
+          </button>
+        </div>
       </div>
       
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

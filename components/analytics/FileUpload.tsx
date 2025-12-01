@@ -16,9 +16,12 @@ export default function FileUpload({ onFileProcessed }: FileUploadProps) {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Validate file type
-    if (!file.name.endsWith('.csv')) {
-      toast.error('Please upload a CSV file');
+    // Validate file type - support CSV, JSON, Excel, and Text files
+    const fileExtension = file.name.split('.').pop()?.toLowerCase();
+    const allowedExtensions = ['csv', 'json', 'xlsx', 'xls', 'txt'];
+    
+    if (!fileExtension || !allowedExtensions.includes(fileExtension)) {
+      toast.error('Please upload a CSV, JSON, Excel (.xlsx, .xls), or Text (.txt) file');
       return;
     }
 
@@ -49,7 +52,7 @@ export default function FileUpload({ onFileProcessed }: FileUploadProps) {
       
       // Process the file and get metadata
       if (data.file_path) {
-        await processFile(data.file_path);
+        await processFile(data.file_path, data.file_type);
       }
     } catch (error) {
       console.error('Upload error:', error);
@@ -59,7 +62,7 @@ export default function FileUpload({ onFileProcessed }: FileUploadProps) {
     }
   };
 
-  const processFile = async (filePath: string) => {
+  const processFile = async (filePath: string, fileType?: 'CSV' | 'JSON' | 'EXCEL' | 'TXT') => {
     try {
       const response = await fetch('/api/analytics/schema', {
         method: 'POST',
@@ -67,6 +70,7 @@ export default function FileUpload({ onFileProcessed }: FileUploadProps) {
         body: JSON.stringify({
           source_type: 'CSV_FILE',
           file_path: filePath,
+          file_type: fileType,
         }),
       });
 
@@ -94,15 +98,20 @@ export default function FileUpload({ onFileProcessed }: FileUploadProps) {
     e.stopPropagation();
 
     const file = e.dataTransfer.files?.[0];
-    if (file && file.name.endsWith('.csv')) {
-      const dataTransfer = new DataTransfer();
-      dataTransfer.items.add(file);
-      if (fileInputRef.current) {
-        fileInputRef.current.files = dataTransfer.files;
-        handleFileSelect({ target: { files: dataTransfer.files } } as any);
+    if (file) {
+      const fileExtension = file.name.split('.').pop()?.toLowerCase();
+      const allowedExtensions = ['csv', 'json', 'xlsx', 'xls', 'txt'];
+      
+      if (fileExtension && allowedExtensions.includes(fileExtension)) {
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+        if (fileInputRef.current) {
+          fileInputRef.current.files = dataTransfer.files;
+          handleFileSelect({ target: { files: dataTransfer.files } } as any);
+        }
+      } else {
+        toast.error('Please drop a CSV, JSON, Excel, or Text file');
       }
-    } else {
-      toast.error('Please drop a CSV file');
     }
   };
 
@@ -117,7 +126,7 @@ export default function FileUpload({ onFileProcessed }: FileUploadProps) {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".csv"
+          accept=".csv,.json,.xlsx,.xls,.txt"
           onChange={handleFileSelect}
           className="hidden"
           disabled={uploading}
@@ -161,9 +170,9 @@ export default function FileUpload({ onFileProcessed }: FileUploadProps) {
                 strokeLinejoin="round"
               />
             </svg>
-            <p className="text-gray-700 font-medium">Upload CSV File</p>
+            <p className="text-gray-700 font-medium">Upload Data File</p>
             <p className="text-sm text-gray-500">
-              Drag and drop a CSV file here, or click to browse
+              Drag and drop a file here (CSV, JSON, Excel, or Text), or click to browse
             </p>
             <p className="text-xs text-gray-400 mt-2">Maximum file size: 10MB</p>
           </div>

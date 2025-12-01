@@ -46,6 +46,40 @@ Translate the **USER QUESTION** in Section 3 into a single, accurate SQL query.
 
 **CORE PRINCIPLE: Generate the EXACT SQL query that answers the user's question, no matter how simple or complex.**
 
+**CRITICAL: DATE/TIME QUERY HANDLING**
+When the user question mentions time-related terms (month, year, day, date, period, over time, trends, distribution over time):
+1. **IDENTIFY THE RIGHT COLUMNS**:
+   - DATE/TIME COLUMN: Find columns with DATE/DATETIME/TIMESTAMP type OR names containing: date, time, year, month, day, period, created, updated, recorded, timestamp
+   - METRIC COLUMN: If user asks "X over time" or "X by month", find the column for X (attendance, sales, score, revenue, etc.)
+   - DO NOT confuse date columns with metric columns!
+
+2. **USE CORRECT SQL DATE FUNCTIONS**:
+   - YEAR(column) - Extract year: "SELECT YEAR(date_col) as year, ..."
+   - MONTH(column) - Extract month (1-12): "SELECT MONTH(date_col) as month, ..."
+   - DAY(column) - Extract day: "SELECT DAY(date_col) as day, ..."
+   - DATE(column) - Extract date part: "SELECT DATE(date_col) as date, ..."
+
+3. **PROPER QUERY PATTERNS** (ALWAYS USE DATE() FOR "OVER MONTH/PERIOD" QUERIES):
+   - **CRITICAL**: "distribution over month" or "over period of month" → **ALWAYS USE**: "SELECT DATE(date_col) as date, COUNT(*) as count FROM table GROUP BY DATE(date_col) ORDER BY date"
+     → NEVER use MONTH() or YEAR(), MONTH() for "over month" queries - always use DATE() to show daily trends
+     → DATE() shows daily trends which is more informative than a single monthly aggregate
+     → This ensures charts show multiple data points (one per day) instead of a single monthly value
+   - **CRITICAL**: "X over month" or "X over period" (where X is a metric) → **ALWAYS USE**: "SELECT DATE(date_col) as date, AVG(X_col) as avg_x FROM table GROUP BY DATE(date_col) ORDER BY date"
+     → NEVER use MONTH() - always use DATE() to show daily trends
+     → Shows daily trends within the period, which is more useful than a single monthly value
+   - "over time" or "by year" → "SELECT YEAR(date_col) as year, COUNT(*) as count FROM table GROUP BY YEAR(date_col) ORDER BY YEAR(date_col)"
+   - "trends" → Use DATE() for day-level trends (most granular and useful for showing patterns)
+   - **REMEMBER**: When user says "over month" or "over period", they want to see a TREND with multiple data points, not a single aggregate value. DATE() provides this.
+
+4. **MATCH USER'S INTENT**:
+   - **CRITICAL RULE**: If user asks "attendance over month" or "attendance over period" → **MUST USE**: "SELECT DATE(date_col) as date, AVG(attendance_col) as avg_attendance FROM table GROUP BY DATE(date_col) ORDER BY date"
+     → NEVER use MONTH() or YEAR(), MONTH() - always use DATE() to ensure multiple data points
+   - **CRITICAL RULE**: If user asks "distribution over month" or "distribution over period" → **MUST USE**: "SELECT DATE(date_col) as date, COUNT(*) as count FROM table GROUP BY DATE(date_col) ORDER BY date"
+     → NEVER use MONTH() - always use DATE() to ensure multiple data points
+   - **KEY INSIGHT**: When user asks "over month" or "over period", they want to see TRENDS with MULTIPLE DATA POINTS. Using DATE() shows daily trends which creates multiple data points. Using MONTH() creates only ONE data point if all records are in the same month, which makes charts look broken.
+   - NEVER use wrong columns: Don't use date_of_birth when user asks about attendance!
+   - **REMEMBER**: Charts need multiple data points to display properly. DATE() ensures this, MONTH() does not.
+
 **QUERY GENERATION GUIDELINES:**
 
 1. **UNDERSTAND THE QUESTION COMPLETELY**:
@@ -59,33 +93,94 @@ Translate the **USER QUESTION** in Section 3 into a single, accurate SQL query.
    - Match column names exactly (case-sensitive, spelling-sensitive)
    - If column name is unclear, use the closest match from metadata
 
-3. **GENERATE ANY SQL QUERY AS NEEDED**:
+3. **HANDLE DATE/TIME COLUMNS PROPERLY**:
+   - When user asks about "time", "date", "month", "year", "day", "period", "over time", "trends":
+     * FIRST: Look for date/time columns in metadata (columns with types: DATE, DATETIME, TIMESTAMP, or names containing: date, time, year, month, day, period, created, updated)
+     * Use SQL date/time functions: YEAR(), MONTH(), DAY(), DATE(), DATEPART(), EXTRACT()
+     * **CRITICAL**: For "distribution over month" or "X over month" → ALWAYS use DATE() for grouping: GROUP BY DATE(date_column)
+     * For "over time" or "trends" → GROUP BY DATE(date_column) or GROUP BY YEAR(date_column) depending on span
+     * For "by year" → GROUP BY YEAR(date_column) ORDER BY YEAR
+     * For "by month" (when user wants monthly aggregation across multiple months) → GROUP BY MONTH(date_column), YEAR(date_column) ORDER BY YEAR, MONTH
+     * ALWAYS use the actual date/time column name from metadata
+   
+   - Examples of proper date/time queries:
+     * "distribution over month" → **ALWAYS USE**: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table GROUP BY DATE(date_column) ORDER BY date"
+     * "trends over time" → "SELECT YEAR(date_column) as year, COUNT(*) as count FROM table GROUP BY YEAR(date_column) ORDER BY YEAR(date_column)" OR use DATE() for daily trends
+     * "by month" (monthly aggregation) → "SELECT MONTH(date_column) as month, YEAR(date_column) as year, COUNT(*) as count FROM table GROUP BY MONTH(date_column), YEAR(date_column) ORDER BY YEAR(date_column), MONTH(date_column)"
+     * "over period" → **ALWAYS USE**: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table GROUP BY DATE(date_column) ORDER BY date"
+   
+   - IMPORTANT: If user asks about a metric (like "attendance") over time, use the metric column AND the date column:
+     * "attendance over month" → **ALWAYS USE**: "SELECT DATE(date_column) as date, AVG(attendance_column) as avg_attendance FROM table GROUP BY DATE(date_column) ORDER BY date"
+     * NOT: "SELECT YEAR(date_of_birth)..." when user asks about attendance
+     * **REMEMBER**: "over month" means daily trends within a month, not monthly aggregation. Use DATE() not MONTH().
+   
+   - DO NOT confuse date columns with metric columns:
+     * Date columns: Used for grouping/time analysis (date, time, created_at, etc.)
+     * Metric columns: Used for calculations (attendance, score, amount, etc.)
+     * When user asks "X over time", use: date column for grouping, X column for calculation
+
+4. **GENERATE ANY SQL QUERY AS NEEDED**:
    - **Simple queries**: "SELECT column FROM table WHERE condition"
    - **Aggregates**: "SELECT AVG(column), SUM(column), COUNT(*) FROM table"
    - **Grouping**: "SELECT category, COUNT(*) FROM table GROUP BY category"
+   - **Date/Time grouping**: "SELECT YEAR(date_col) as year, MONTH(date_col) as month, COUNT(*) FROM table GROUP BY YEAR(date_col), MONTH(date_col) ORDER BY year, month"
    - **Sorting**: "SELECT * FROM table ORDER BY column DESC"
    - **Limits**: "SELECT * FROM table LIMIT 10"
    - **Combinations**: Use any combination of SELECT, FROM, WHERE, GROUP BY, ORDER BY, LIMIT
    - **Complex queries**: Use subqueries, multiple WHERE conditions, multiple ORDER BY fields if needed
 
-4. **EXAMPLES OF ACCURATE QUERY GENERATION**:
+5. **EXAMPLES OF ACCURATE QUERY GENERATION**:
+   
+   **Category/Grouping Queries:**
    - User: "which state has the least student count"
      → Query: "SELECT state, COUNT(*) as student_count FROM table_name GROUP BY state ORDER BY student_count ASC LIMIT 1"
-   
-   - User: "show me top 5 students by CGPA"
-     → Query: "SELECT full_name, cgpa FROM table_name ORDER BY cgpa DESC LIMIT 5"
-   
-   - User: "what is the average attendance"
-     → Query: "SELECT AVG(attendance_percentage) as avg_attendance FROM table_name"
-   
-   - User: "students with CGPA above 8"
-     → Query: "SELECT * FROM table_name WHERE cgpa > 8 LIMIT 100"
    
    - User: "compare CGPA by academic stream"
      → Query: "SELECT academic_stream, AVG(cgpa) as avg_cgpa FROM table_name GROUP BY academic_stream ORDER BY avg_cgpa DESC"
    
-   - User: "how many students are in each state"
-     → Query: "SELECT state, COUNT(*) as count FROM table_name GROUP BY state ORDER BY count DESC"
+   **Date/Time Queries (CRITICAL):**
+   - User: "distribution over month" or "over period of month"
+     → Query: **ALWAYS USE**: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table_name GROUP BY DATE(date_column) ORDER BY date"
+     → **NEVER USE**: MONTH() or YEAR(), MONTH() for "over month" queries - always use DATE() to ensure multiple data points
+     → DATE() shows daily trends which creates multiple data points for charts. MONTH() creates only one data point if all records are in the same month.
+   
+   - User: "attendance over month" or "attendance distribution over month"
+     → Query: **ALWAYS USE**: "SELECT DATE(date_column) as date, AVG(attendance_column) as avg_attendance FROM table_name GROUP BY DATE(date_column) ORDER BY date"
+     → **NEVER USE**: MONTH() or YEAR(), MONTH() - always use DATE() to ensure multiple data points
+     → Use attendance_column for calculation, date_column for grouping with DATE() function
+     → DATE() ensures charts show daily trends with multiple data points, not a single monthly aggregate
+   
+   - User: "trends over time" or "over years"
+     → Query: "SELECT YEAR(date_column) as year, COUNT(*) as count FROM table_name GROUP BY YEAR(date_column) ORDER BY YEAR(date_column)"
+   
+   - User: "by month" or "monthly distribution"
+     → Query: "SELECT MONTH(date_column) as month, COUNT(*) as count FROM table_name GROUP BY MONTH(date_column) ORDER BY MONTH(date_column)"
+   
+   - User: "over period" (when date column exists)
+     → Query: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table_name GROUP BY DATE(date_column) ORDER BY DATE(date_column)"
+   
+   **Ranking Queries:**
+   - User: "show me top 5 students by CGPA"
+     → Query: "SELECT full_name, cgpa FROM table_name ORDER BY cgpa DESC LIMIT 5"
+   
+   **Single Value Queries:**
+   - User: "what is the average attendance"
+     → Query: "SELECT AVG(attendance_percentage) as avg_attendance FROM table_name"
+   
+   **Filter Queries:**
+   - User: "students with CGPA above 8"
+     → Query: "SELECT * FROM table_name WHERE cgpa > 8 LIMIT 100"
+   
+   - User: "admission over period of month" or "attendance over period of month" (when date column exists)
+     → Query: **ALWAYS USE**: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table_name GROUP BY DATE(date_column) ORDER BY date"
+     → **NEVER USE**: YEAR(), MONTH() for "over period of month" - always use DATE() to ensure multiple data points
+     OR: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table_name GROUP BY DATE(date_column) ORDER BY date"
+   
+   - User: "admission trends by year" (when date column exists)
+     → Query: "SELECT YEAR(date_column) as year, COUNT(*) as admission_count FROM table_name GROUP BY YEAR(date_column) ORDER BY year"
+   
+   - User: "monthly attendance average" (when date column exists)
+     → Query: "SELECT YEAR(date_column) as year, MONTH(date_column) as month, AVG(attendance_percentage) as avg_attendance FROM table_name GROUP BY YEAR(date_column), MONTH(date_column) ORDER BY year, month"
 
 5. **IMPORTANT NOTES**:
    - Always use proper SQL syntax
@@ -93,6 +188,13 @@ Translate the **USER QUESTION** in Section 3 into a single, accurate SQL query.
    - For "least", "lowest", "minimum" → Use ORDER BY ASC LIMIT 1
    - For "most", "highest", "maximum" → Use ORDER BY DESC LIMIT 1
    - For "top N" or "bottom N" → Use ORDER BY with LIMIT N
+   - **CRITICAL FOR DATE/TIME QUERIES**: When user asks about "over time", "by month", "by year", "trends", "period", etc.:
+     * Check metadata for DATE or DATETIME columns
+     * Use date extraction functions: YEAR(column), MONTH(column), DATE(column), DAY(column)
+     * **CRITICAL**: For "over period of month" or "over month" → **ALWAYS USE**: "SELECT DATE(date_col) as date, ... GROUP BY DATE(date_col) ORDER BY date"
+     * For "by month" (monthly aggregation across multiple months) → Use "SELECT YEAR(date_col), MONTH(date_col), ... GROUP BY YEAR(date_col), MONTH(date_col)"
+     * For "by year" → Use "SELECT YEAR(date_col) as year, ... GROUP BY YEAR(date_col)"
+     * Always ORDER BY the date fields chronologically (year, month, day)
    - Don't add unnecessary complexity - keep queries simple and direct
    - But don't simplify if the question requires complexity
 
@@ -139,8 +241,10 @@ Generate 6-8 metrics that NATURALLY produce different visualization types. Ensur
    - visualization_type: "auto"
 
 4. **Line Chart (Time Series)** - Only if date/time column exists:
-   - Trend over time: "SELECT date_column, COUNT(*) as count FROM table_name GROUP BY date_column ORDER BY date_column"
+   - Trend over time: "SELECT YEAR(date_column) as year, MONTH(date_column) as month, COUNT(*) as count FROM table_name GROUP BY YEAR(date_column), MONTH(date_column) ORDER BY year, month"
+   - OR: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table_name GROUP BY DATE(date_column) ORDER BY date"
    - Use: Growth trends, changes over time, temporal patterns
+   - **IMPORTANT**: Always use YEAR(), MONTH(), or DATE() functions for date grouping, never group by raw date column
    - visualization_type: "auto"
 
 5. **Scatter Plot (Correlations)** - If two numeric columns exist:
@@ -283,7 +387,46 @@ When source_type is CSV_FILE:
 9. Use ORDER BY for sorting (ASC for lowest/least, DESC for highest/most)
 10. Use GROUP BY for comparisons and distributions
 11. Use WHERE for filtering
-12. Generate the EXACT query needed to answer the question accurately`;
+12. Generate the EXACT query needed to answer the question accurately
+
+**CRITICAL: DATE/TIME QUERY HANDLING**
+When user asks about time-based queries (month, year, day, date, period, over time, trends):
+1. **IDENTIFY COLUMNS CORRECTLY**:
+   - Find DATE/TIME column: Look for columns with type DATE, DATETIME, TIMESTAMP, or names containing: date, time, year, month, day, period, created, updated, recorded, timestamp
+   - Find METRIC column: If user asks "X over time", find the column for X (attendance, sales, score, etc.)
+   - DO NOT confuse date columns with metric columns!
+
+2. **USE PROPER SQL DATE FUNCTIONS**:
+   - YEAR(column) - Extract year from date
+   - MONTH(column) - Extract month (1-12) from date
+   - DAY(column) - Extract day from date
+   - DATE(column) - Extract date part (for daily grouping)
+   - For CSV files, these functions work on date-like columns
+
+3. **PROPER GROUPING PATTERNS**:
+   - **CRITICAL**: "over month" or "over period of month" → **ALWAYS USE**: GROUP BY DATE(date_col) ORDER BY date
+     → NEVER use MONTH() or YEAR(), MONTH() for "over month" queries - always use DATE() to ensure multiple data points
+   - "by month" (monthly aggregation across multiple months) → GROUP BY MONTH(date_col), YEAR(date_col) ORDER BY YEAR(date_col), MONTH(date_col)
+   - "over year" or "by year" → GROUP BY YEAR(date_col) ORDER BY YEAR(date_col)
+   - "over time" or "trends" → GROUP BY DATE(date_col) ORDER BY date (preferred for daily trends) or GROUP BY YEAR(date_col) ORDER BY YEAR(date_col)
+   - "distribution over period" → **ALWAYS USE**: GROUP BY DATE(date_col) ORDER BY date
+
+4. **METRIC OVER TIME PATTERN**:
+   - User: "attendance over month" → **ALWAYS USE**: "SELECT DATE(date_col) as date, AVG(attendance_col) as avg_attendance FROM table GROUP BY DATE(date_col) ORDER BY date"
+     → NEVER use MONTH() or YEAR(), MONTH() - always use DATE() to ensure multiple data points
+   - User: "sales by year" → "SELECT YEAR(date_col) as year, SUM(sales_col) as total_sales FROM table GROUP BY YEAR(date_col) ORDER BY YEAR(date_col)"
+   - Pattern: SELECT date_part(date_col), aggregate(metric_col) FROM table GROUP BY date_part ORDER BY date_part
+   - **REMEMBER**: "over month" means daily trends, use DATE(). "by month" means monthly aggregation, use MONTH(), YEAR().
+
+5. **COMMON MISTAKES TO AVOID**:
+   - ❌ WRONG: Using date_of_birth when user asks about attendance
+   - ✅ RIGHT: Using attendance_column with date_column for grouping
+   - ❌ WRONG: "SELECT YEAR(date_of_birth)" when user asks "attendance over month"
+   - ❌ WRONG: "SELECT MONTH(attendance_date), AVG(attendance_value)" when user asks "attendance over month" (creates only 1 data point)
+   - ✅ RIGHT: "SELECT DATE(attendance_date) as date, AVG(attendance_value) as avg_attendance FROM table GROUP BY DATE(attendance_date) ORDER BY date" when user asks "attendance over month"
+   - ❌ WRONG: Not using the metric column when user asks about a specific metric
+   - ✅ RIGHT: Always use the metric column for calculations when user mentions a specific metric
+   - **CRITICAL**: For "over month" or "over period" queries, ALWAYS use DATE() not MONTH() to ensure multiple data points for charts`;
 
 function formatMetadata(metadata: DataSourceMetadata): string {
   return JSON.stringify(metadata, null, 2);
@@ -303,7 +446,7 @@ export async function generateAdhocQuery(
     messages: [
       {
         role: 'system',
-        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. Use any SQL features needed (WHERE, GROUP BY, ORDER BY, LIMIT, aggregates, aliases). Always return valid JSON only.',
+        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. Use any SQL features needed (WHERE, GROUP BY, ORDER BY, LIMIT, aggregates, aliases). CRITICAL: For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR(), MONTH() - this ensures charts show multiple data points. Always return valid JSON only.',
       },
       {
         role: 'user',
@@ -335,7 +478,7 @@ export async function generateDashboardMetrics(
     messages: [
       {
         role: 'system',
-        content: 'You are an expert analytics dashboard generator that works with ANY type of data (business, healthcare, education, finance, retail, etc.). Analyze the provided metadata to understand the data domain and column structure. Generate 6-8 key dashboard metrics that: 1) Cover ALL visualization types (gauge, bar_chart, pie_chart, line_chart, scatter_plot, table), 2) Are the MOST IMPORTANT questions for THIS specific dataset, 3) Use actual column names from metadata, 4) Generate diverse query types that naturally produce different visualizations. Always return valid JSON only.',
+        content: 'You are an expert analytics dashboard generator that works with ANY type of data (business, healthcare, education, finance, retail, etc.). Analyze the provided metadata to understand the data domain and column structure. Generate 6-8 key dashboard metrics that: 1) Cover ALL visualization types (gauge, bar_chart, pie_chart, line_chart, scatter_plot, table), 2) Are the MOST IMPORTANT questions for THIS specific dataset, 3) Use actual column names from metadata, 4) Generate diverse query types that naturally produce different visualizations, 5) Handle date/time queries properly using YEAR(), MONTH(), DAY(), DATE() functions when temporal analysis is needed. Always return valid JSON only.',
       },
       {
         role: 'user',

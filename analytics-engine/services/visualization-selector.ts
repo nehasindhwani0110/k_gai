@@ -54,12 +54,23 @@ export function autoSelectVisualizationType(
   );
   const isRankingQuery = /order\s+by.*limit|top\s+\d+|bottom\s+\d+|highest|lowest/i.test(queryContent);
   
+  // Check if query has GROUP BY with date functions (MONTH, YEAR, etc.)
+  const hasDateGroupBy = /group\s+by.*(?:year|month|day|date)\(/i.test(queryContent);
+  
   // Only use line chart if it's explicitly a trend/time query AND not a ranking
-  if ((hasTimeColumn || isTrend) && rowCount > 1 && !isRankingQuery) {
+  // For date GROUP BY queries, prefer line chart even with single row (data issue, not visualization issue)
+  if ((hasTimeColumn || isTrend || hasDateGroupBy) && rowCount >= 1 && !isRankingQuery) {
     // Make sure it's actually time-series data (date column should be the category)
     const timeKey = keys.find(key => /date|time|year|month|day|week|quarter/i.test(key));
-    if (timeKey && timeKey === keys[0]) {
-      return 'line_chart';
+    if (timeKey) {
+      // If we have year AND month columns, it's definitely time series
+      if (keys.some(k => /year/i.test(k)) && keys.some(k => /month/i.test(k))) {
+        return 'line_chart';
+      }
+      // If time column is first or second column, use line chart
+      if (timeKey === keys[0] || timeKey === keys[1]) {
+        return 'line_chart';
+      }
     }
   }
 

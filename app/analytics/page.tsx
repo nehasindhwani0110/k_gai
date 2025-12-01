@@ -39,11 +39,37 @@ export default function AnalyticsPage() {
   const loadMetadata = async () => {
     setLoading(true);
     try {
-      // In production, fetch from API
-      // const response = await fetch('/api/analytics/schema', { ... });
-      setMetadata(exampleMetadata);
+      // Check if school is logged in
+      const schoolId = sessionStorage.getItem('schoolId');
+      const dataSourceId = sessionStorage.getItem('dataSourceId');
+      
+      if (schoolId && dataSourceId) {
+        // Load schema from logged-in school's data source
+        console.log(`[ANALYTICS] Loading schema for dataSourceId: ${dataSourceId}`);
+        const response = await fetch(`/api/analytics/data-sources/${dataSourceId}/schema`);
+        
+        if (!response.ok) {
+          throw new Error(`Failed to load schema: ${response.statusText}`);
+        }
+        
+        const schemaMetadata = await response.json();
+        console.log(`[ANALYTICS] Schema loaded:`, schemaMetadata);
+        
+        if (schemaMetadata.error) {
+          throw new Error(schemaMetadata.error);
+        }
+        
+        setMetadata(schemaMetadata);
+        setDataSourceType('example'); // Mark as SQL DB source
+      } else {
+        // Fallback to example metadata if not logged in
+        console.log('[ANALYTICS] No school logged in, using example metadata');
+        setMetadata(exampleMetadata);
+      }
     } catch (error) {
       console.error('Failed to load metadata:', error);
+      // Fallback to example metadata on error
+      setMetadata(exampleMetadata);
     } finally {
       setLoading(false);
     }
