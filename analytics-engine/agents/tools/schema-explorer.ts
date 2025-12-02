@@ -14,6 +14,8 @@ const openai = createTracedOpenAI();
 
 /**
  * Identifies relevant tables for a given question
+ * 
+ * First tries semantic matching (embeddings), falls back to LLM-based selection
  */
 export async function identifyRelevantTables(
   question: string,
@@ -29,6 +31,33 @@ export async function identifyRelevantTables(
   }
 
   try {
+    // Try semantic matching first (more accurate and efficient)
+    try {
+      console.log(`\n[SCHEMA-EXPLORER] 🎯 Attempting semantic matching for question: "${question}"`);
+      const { findRelevantTables } = await import('../../services/semantic-matcher');
+      const { DataSourceMetadata } = await import('../../types');
+      
+      // Create minimal metadata for semantic matching
+      const minimalMetadata: DataSourceMetadata = {
+        source_type: 'SQL_DB',
+        tables: allTables.map(name => ({
+          name,
+          columns: [],
+        })),
+      };
+      
+      const matches = await findRelevantTables(question, minimalMetadata, 5);
+      const relevantTables = matches.map(m => m.name);
+      
+      console.log(`[SCHEMA-EXPLORER] ✅ Semantic matching successful! Found ${relevantTables.length} tables: ${relevantTables.join(', ')}\n`);
+      return relevantTables.length > 0 ? relevantTables : allTables.slice(0, 5);
+    } catch (error) {
+      console.warn(`\n[SCHEMA-EXPLORER] ⚠️ Semantic matching failed, using LLM fallback:`, error);
+      console.log('[SCHEMA-EXPLORER] 🔄 Falling back to LLM-based selection...\n');
+      // Fall through to LLM-based approach
+    }
+
+    // Fallback: Use LLM to identify relevant tables
     const prompt = `Given this question: "${question}"
 
 Available tables: ${allTables.join(', ')}

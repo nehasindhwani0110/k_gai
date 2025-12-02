@@ -474,19 +474,28 @@ export async function generateAdhocQuery(
   metadata: DataSourceMetadata,
   connectionString?: string
 ): Promise<AdhocQueryResponse> {
-  // Reduce metadata for large databases based on user question
+  // Reduce metadata using semantic analysis (works for both SQL and CSV)
   let reducedMetadata = metadata;
   const allTables = metadata.tables || [];
+  const totalColumns = allTables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
+  const isCSV = metadata.source_type === 'CSV_FILE';
   
-  if (allTables.length > 10) {
-    console.log(`[LLM-SERVICE] Large database detected (${allTables.length} tables), reducing metadata for ad-hoc query`);
+  // Use semantic matching if:
+  // 1. CSV files with many columns (>15) - helps find relevant columns within single table, OR
+  // 2. SQL databases with many tables (>5) or many columns (>50)
+  const shouldUseSemanticMatching = isCSV ? totalColumns > 15 : allTables.length > 5 || totalColumns > 50;
+  
+  if (shouldUseSemanticMatching) {
+    console.log(`[LLM-SERVICE] Using semantic analysis for ${isCSV ? 'CSV file' : 'SQL database'} (${allTables.length} tables, ${totalColumns} columns)`);
     try {
       reducedMetadata = await reduceMetadataForAdhocQuery(userQuestion, metadata, connectionString);
-      console.log(`[LLM-SERVICE] Using reduced metadata with ${reducedMetadata.tables.length} tables`);
+      console.log(`[LLM-SERVICE] ✅ Semantic analysis complete! Using ${reducedMetadata.tables.length} tables`);
     } catch (error) {
-      console.warn('[LLM-SERVICE] Metadata reduction failed, using full metadata:', error);
+      console.warn('[LLM-SERVICE] ⚠️ Semantic matching failed, using full metadata:', error);
       // Continue with full metadata (may fail with very large databases)
     }
+  } else {
+    console.log(`[LLM-SERVICE] ℹ️ Skipping semantic matching (${allTables.length} tables, ${totalColumns} columns - schema is small enough)`);
   }
 
   const prompt = MASTER_PROMPT_TEMPLATE
@@ -568,18 +577,28 @@ export async function generateAdhocQueryWithLangGraphAgent(
 
     console.log('[LLM-SERVICE] Using LangGraph agent for query generation');
 
-    // Reduce metadata first for large databases (agent will further refine during schema exploration)
+    // Reduce metadata first using semantic analysis (works for both SQL and CSV)
+    // This helps with large schemas and improves query accuracy
     let reducedMetadata = metadata;
     const allTables = metadata.tables || [];
+    const totalColumns = allTables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
+    const isCSV = metadata.source_type === 'CSV_FILE';
     
-    if (allTables.length > 10 && connectionString) {
-      console.log(`[LLM-SERVICE] Pre-reducing metadata (${allTables.length} tables) before agent execution`);
+    // Use semantic matching if:
+    // 1. More than 5 tables, OR
+    // 2. More than 50 total columns (even with 1 table, CSV files can have many columns)
+    const shouldUseSemanticMatching = allTables.length > 5 || totalColumns > 50;
+    
+    if (shouldUseSemanticMatching) {
+      console.log(`[LLM-SERVICE] Pre-reducing metadata using semantic analysis (${allTables.length} tables, ${totalColumns} columns) before agent execution`);
       try {
         reducedMetadata = await reduceMetadataForAdhocQuery(userQuestion, metadata, connectionString);
-        console.log(`[LLM-SERVICE] Pre-reduced to ${reducedMetadata.tables.length} tables`);
+        console.log(`[LLM-SERVICE] ✅ Semantic analysis complete! Reduced to ${reducedMetadata.tables.length} tables`);
       } catch (error) {
-        console.warn('[LLM-SERVICE] Pre-reduction failed, agent will handle it:', error);
+        console.warn('[LLM-SERVICE] ⚠️ Semantic matching failed, agent will handle it:', error);
       }
+    } else {
+      console.log(`[LLM-SERVICE] ℹ️ Skipping semantic matching (${allTables.length} tables, ${totalColumns} columns - too small to benefit)`);
     }
 
     // Execute agent workflow (agent will further explore schema if needed)
@@ -689,8 +708,8 @@ function createReducedMetadata(
 /**
  * Reduces metadata for ad-hoc queries based on user question
  * 
- * For ad-hoc queries, we need to identify relevant tables based on the question,
- * not just based on column types. This prevents context length errors with large databases.
+ * Uses semantic analysis (embeddings) to find the most relevant tables and columns.
+ * This provides more accurate matching than keyword-based approaches.
  */
 async function reduceMetadataForAdhocQuery(
   userQuestion: string,
@@ -698,14 +717,42 @@ async function reduceMetadataForAdhocQuery(
   connectionString?: string
 ): Promise<DataSourceMetadata> {
   const allTables = metadata.tables || [];
+  const totalColumns = allTables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
+  const isCSV = metadata.source_type === 'CSV_FILE';
   
-  // If we have few tables, return all
-  if (allTables.length <= 10) {
+  // For CSV files: use semantic matching if many columns (>15) - helps find relevant columns within single table
+  // For SQL databases: use semantic matching if many tables (>5) or many columns (>50)
+  const shouldUseSemanticMatching = isCSV 
+    ? totalColumns > 15 
+    : allTables.length > 5 || totalColumns > 50;
+  
+  if (!shouldUseSemanticMatching) {
+    console.log(`[LLM-SERVICE] ℹ️ Schema is small enough (${allTables.length} tables, ${totalColumns} columns), skipping semantic reduction`);
     return metadata;
   }
 
   try {
-    // For SQL databases with connection string, use schema exploration
+    // Try semantic matching first (most accurate)
+    try {
+      const { createSemanticallyReducedMetadata } = await import('./semantic-matcher');
+      
+      console.log(`\n[LLM-SERVICE] 🎯 Attempting semantic analysis for question: "${userQuestion}"`);
+      const reducedMetadata = await createSemanticallyReducedMetadata(
+        userQuestion,
+        metadata,
+        5, // max tables
+        15 // max columns per table
+      );
+      
+      console.log(`[LLM-SERVICE] ✅ Semantic analysis successful! Using ${reducedMetadata.tables?.length || 0} relevant tables\n`);
+      return reducedMetadata;
+    } catch (error) {
+      console.warn('\n[LLM-SERVICE] ⚠️ Semantic matching failed, trying schema exploration:', error);
+      console.log('[LLM-SERVICE] 🔄 Falling back to schema exploration...\n');
+      // Fall through to schema exploration
+    }
+
+    // Fallback 1: For SQL databases with connection string, use schema exploration
     if (metadata.source_type === 'SQL_DB' && connectionString) {
       try {
         const { exploreSchemaWithPythonAgent } = await import('./python-agent-bridge');
@@ -724,7 +771,7 @@ async function reduceMetadataForAdhocQuery(
       }
     }
     
-    // Fallback: Use LLM to identify relevant tables based on question
+    // Fallback 2: Use LLM to identify relevant tables based on question
     const { identifyRelevantTables } = await import('../agents/tools/schema-explorer');
     const relevantTables = await identifyRelevantTables(
       userQuestion,

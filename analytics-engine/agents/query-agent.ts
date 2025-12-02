@@ -147,56 +147,12 @@ CRITICAL - Question Intent Analysis:
 Return ONLY the SQL query, no explanations:`;
 
       const response = await this.llm.invoke(prompt);
-      let query = typeof response.content === 'string' 
+      const query = typeof response.content === 'string' 
         ? response.content.trim() 
         : JSON.stringify(response.content).trim();
       
       // Clean up query (remove markdown code blocks if present)
-      let cleanQuery = query.replace(/^```sql\s*/i, '').replace(/```\s*$/, '').trim();
-      
-      // Post-generation check: Verify query uses columns from question
-      const queryLower = cleanQuery.toLowerCase();
-      const questionLower = state.question.toLowerCase();
-      const missingColumns: string[] = [];
-      
-      columnMapping.forEach(mapping => {
-        const termMentions = (questionLower.match(new RegExp(mapping.questionTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')) || []).length;
-        if (termMentions > 0 && !queryLower.includes(mapping.columnName.toLowerCase())) {
-          missingColumns.push(`${mapping.questionTerm} → ${mapping.columnName}`);
-        }
-      });
-      
-      // If critical columns are missing, refine the query
-      if (missingColumns.length > 0 && columnMapping.length > 0) {
-        console.log('[AGENT] Query missing columns, refining...', missingColumns);
-        
-        const refinePrompt = `Refine this SQL query to use the correct columns from the question.
-
-Question: "${state.question}"
-Current Query: ${cleanQuery}
-
-Missing Columns:
-${missingColumns.map(m => `- ${m}`).join('\n')}
-
-Column Mapping:
-${columnMapping.map(m => `- "${m.questionTerm}" → Use column: "${m.columnName}"`).join('\n')}
-
-Schema:
-${JSON.stringify(state.metadata, null, 2)}
-
-Return ONLY the corrected SQL query (no explanations, no markdown):`;
-
-        try {
-          const refineResponse = await this.llm.invoke(refinePrompt);
-          const refinedQuery = typeof refineResponse.content === 'string' 
-            ? refineResponse.content.trim() 
-            : JSON.stringify(refineResponse.content).trim();
-          cleanQuery = refinedQuery.replace(/^```sql\s*/i, '').replace(/```\s*$/, '').trim();
-          console.log('[AGENT] Query refined');
-        } catch (error) {
-          console.warn('[AGENT] Query refinement failed:', error);
-        }
-      }
+      const cleanQuery = query.replace(/^```sql\s*/i, '').replace(/```\s*$/, '').trim();
       
       return {
         query: cleanQuery,

@@ -10,43 +10,43 @@ datasource db {
 }
 
 model QueryHistory {
-  id            String   @id @default(cuid())
+  id           String   @id @default(cuid())
   userQuestion String
-  queryType    String   // SQL_QUERY or QUERY_LOGIC
+  queryType    String // SQL_QUERY or QUERY_LOGIC
   queryContent String
-  sourceType   String   // SQL_DB, CSV_FILE, JSON_FILE, etc.
-  filePath     String?  // For file-based queries
-  results      String?  // JSON string of results
+  sourceType   String // SQL_DB, CSV_FILE, JSON_FILE, etc.
+  filePath     String? // For file-based queries
+  results      String? // JSON string of results
   createdAt    DateTime @default(now())
-  
+
   @@index([createdAt])
   @@index([sourceType])
 }
 
 model DashboardMetric {
-  id              String   @id @default(cuid())
-  metricName      String
-  queryContent    String
+  id                String   @id @default(cuid())
+  metricName        String
+  queryContent      String
   visualizationType String
-  insightSummary  String
-  sourceType      String
-  filePath        String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  
+  insightSummary    String
+  sourceType        String
+  filePath          String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
   @@index([sourceType])
 }
 
 model FileMetadata {
-  id          String   @id @default(cuid())
-  fileName    String
-  filePath    String   @unique
-  fileType    String   // CSV, JSON, EXCEL, TXT
-  fileSize    Int
-  tableName   String?  // Generated table name
-  metadata    String   // JSON string of DataSourceMetadata
-  uploadedAt  DateTime @default(now())
-  
+  id         String   @id @default(cuid())
+  fileName   String
+  filePath   String   @unique
+  fileType   String // CSV, JSON, EXCEL, TXT
+  fileSize   Int
+  tableName  String? // Generated table name
+  metadata   String // JSON string of DataSourceMetadata
+  uploadedAt DateTime @default(now())
+
   @@index([fileType])
   @@index([uploadedAt])
 }
@@ -54,82 +54,94 @@ model FileMetadata {
 // System Tables for Canonical Mapping (Multi-tenant SQL Database Support)
 
 model School {
-  id                String   @id @default(cuid())
-  email             String   @unique // School login email (e.g., "schoola@gmail.com")
-  password          String   // Hashed password
-  name              String   // School name (e.g., "School A")
-  connectionString  String   // Database connection string (e.g., "mysql://root:neha@2004@localhost:3306/gai")
-  dataSourceId      String?  @unique // Link to DataSource (created after schema detection) - unique for one-to-one relation
-  dataSource        DataSource? @relation(fields: [dataSourceId], references: [id], onDelete: SetNull)
-  isActive          Boolean  @default(true)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  
+  id               String      @id @default(cuid())
+  email            String      @unique // School login email (e.g., "schoola@gmail.com")
+  password         String // Hashed password
+  name             String // School name (e.g., "School A")
+  connectionString String // Database connection string (e.g., "mysql://root:neha@2004@localhost:3306/gai")
+  dataSourceId     String?     @unique // Link to DataSource (created after schema detection) - unique for one-to-one relation
+  dataSource       DataSource? @relation(fields: [dataSourceId], references: [id], onDelete: SetNull)
+  isActive         Boolean     @default(true)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
   @@index([email])
   @@index([isActive])
 }
 
 model DataSource {
-  id                String   @id @default(cuid())
-  name              String   // e.g., "School A", "Company B", "Tenant 1"
-  sourceType        String   // SQL_DB, CSV_FILE, etc.
-  connectionString  String?  // For SQL databases (encrypted in production)
-  isActive          Boolean  @default(true)
-  description       String?  // Optional description
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  
-  school            School?  // Link to School (if created via school login)
-  schemaMappings    SchemaMapping[]
-  schemaRegistry    SchemaRegistry[]
-  
+  id               String   @id @default(cuid())
+  name             String // e.g., "School A", "Company B", "Tenant 1"
+  sourceType       String // SQL_DB, CSV_FILE, etc.
+  connectionString String? // For SQL databases (encrypted in production)
+  isActive         Boolean  @default(true)
+  description      String? // Optional description
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  school         School? // Link to School (if created via school login)
+  schemaMappings SchemaMapping[]
+  schemaRegistry SchemaRegistry[]
+
   @@index([sourceType])
   @@index([isActive])
   @@index([name])
 }
 
 model SchemaRegistry {
-  id                  String   @id @default(cuid())
-  dataSourceId        String
-  dataSource          DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
-  
-  tableName           String   // Actual table name in source database (e.g., "tbl_students")
-  columnName          String   // Actual column name in source database (e.g., "stu_id")
-  canonicalTableName  String   // Standardized table name (e.g., "students")
-  canonicalColumnName String   // Standardized column name (e.g., "student_id")
-  dataType            String   // Column data type (e.g., "INTEGER", "VARCHAR")
-  description         String?  // Column description
-  isPrimaryKey        Boolean  @default(false)
-  isNullable          Boolean  @default(true)
-  
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  
+  id           String     @id @default(cuid())
+  dataSourceId String
+  dataSource   DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+
+  tableName           String // Actual table name in source database (e.g., "tbl_students")
+  columnName          String // Actual column name in source database (e.g., "stu_id")
+  canonicalTableName  String // Standardized table name (e.g., "students")
+  canonicalColumnName String // Standardized column name (e.g., "student_id")
+  dataType            String // Column data type (e.g., "INTEGER", "VARCHAR")
+  description         String? // Column description
+  isPrimaryKey        Boolean @default(false)
+  isNullable          Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([dataSourceId, tableName, columnName])
   @@index([dataSourceId])
   @@index([canonicalTableName])
   @@index([canonicalColumnName])
-  @@unique([dataSourceId, tableName, columnName])
 }
 
 model SchemaMapping {
-  id                String   @id @default(cuid())
-  dataSourceId      String
-  dataSource        DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
-  
-  sourceTable       String   // Actual table name in source DB (e.g., "tbl_students")
-  sourceColumn      String   // Actual column name in source DB (e.g., "stu_id")
-  canonicalTable    String   // Standard canonical table name (e.g., "students")
-  canonicalColumn   String   // Standard canonical column name (e.g., "student_id")
-  
+  id           String     @id @default(cuid())
+  dataSourceId String
+  dataSource   DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+
+  sourceTable     String // Actual table name in source DB (e.g., "tbl_students")
+  sourceColumn    String // Actual column name in source DB (e.g., "stu_id")
+  canonicalTable  String // Standard canonical table name (e.g., "students")
+  canonicalColumn String // Standard canonical column name (e.g., "student_id")
+
   // Optional transformation rules for data conversion
   transformationRule String? // e.g., "UPPER", "LOWER", "DATE_FORMAT('%Y-%m-%d')", etc.
-  
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([dataSourceId, sourceTable, sourceColumn])
   @@index([dataSourceId])
   @@index([canonicalTable])
   @@index([canonicalColumn])
-  @@unique([dataSourceId, sourceTable, sourceColumn])
 }
 
+model EmbeddingCache {
+  id        String   @id @default(cuid())
+  cacheKey  String   @unique
+  embedding String // JSON array of numbers
+  type      String // 'table', 'column', or 'question'
+  text      String? // Original text (for reference, max 500 chars)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([cacheKey])
+}
