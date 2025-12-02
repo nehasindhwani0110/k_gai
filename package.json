@@ -10,6 +10,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
+    "create:realestate": "tsx scripts/create_realestate_tenant.ts",
+    "test:realestate": "tsx scripts/test_realestate_tenant.ts",
     "python:backend": "cd analytics-engine/python-backend && python api_server.py",
     "python:install": "cd analytics-engine/python-backend && pip install -r requirements.txt"
   },

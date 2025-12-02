@@ -14,6 +14,7 @@ import { generateAdhocQuery } from './llm-service'; // Fallback
  * Calls Python backend agent service for query generation
  * 
  * Python backend should have a LangChain SQL agent endpoint
+ * Reduces metadata before calling Python backend to prevent context length errors
  */
 export async function generateQueryWithPythonAgent(
   userQuestion: string,
@@ -25,6 +26,21 @@ export async function generateQueryWithPythonAgent(
   try {
     console.log('[PYTHON-AGENT] Using Python agent for query generation');
     
+    // Reduce metadata for large databases before sending to Python backend
+    let reducedMetadata = metadata;
+    if (metadata && metadata.tables && metadata.tables.length > 10) {
+      console.log(`[PYTHON-AGENT] Reducing metadata (${metadata.tables.length} tables) before sending to Python backend`);
+      try {
+        // Use schema exploration to identify relevant tables
+        const exploredMetadata = await exploreSchemaWithPythonAgent(userQuestion, connectionString);
+        reducedMetadata = exploredMetadata;
+        console.log(`[PYTHON-AGENT] Reduced to ${exploredMetadata.tables?.length || 0} relevant tables`);
+      } catch (error) {
+        console.warn('[PYTHON-AGENT] Schema exploration failed, using original metadata:', error);
+        // Continue with original metadata (Python backend may handle it)
+      }
+    }
+    
     const response = await fetch(`${pythonBackendUrl}/agent/query`, {
       method: 'POST',
       headers: {
@@ -33,7 +49,7 @@ export async function generateQueryWithPythonAgent(
       body: JSON.stringify({
         question: userQuestion,
         connection_string: connectionString,
-        metadata: metadata,
+        metadata: reducedMetadata,
       }),
     });
 
@@ -56,9 +72,9 @@ export async function generateQueryWithPythonAgent(
     };
   } catch (error) {
     console.error('[PYTHON-AGENT] Error:', error);
-    // Fallback to direct LLM
+    // Fallback to direct LLM (which also reduces metadata)
     console.log('[PYTHON-AGENT] Falling back to direct LLM');
-    return generateAdhocQuery(userQuestion, metadata!);
+    return generateAdhocQuery(userQuestion, metadata!, connectionString);
   }
 }
 

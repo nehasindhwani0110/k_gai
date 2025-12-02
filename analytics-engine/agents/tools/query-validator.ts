@@ -66,6 +66,7 @@ Check:
 4. Is the SQL syntax correct?
 5. Are aggregate functions used correctly?
 6. Are JOINs (if any) correct?
+7. CRITICAL - MySQL ONLY_FULL_GROUP_BY mode: Are ALL non-aggregated columns in SELECT also in GROUP BY clause? If not, this will cause an error. Non-grouped columns should either be added to GROUP BY or wrapped in aggregate functions (MIN, MAX).
 
 Return JSON:
 {

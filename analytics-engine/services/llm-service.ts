@@ -434,11 +434,27 @@ function formatMetadata(metadata: DataSourceMetadata): string {
 
 export async function generateAdhocQuery(
   userQuestion: string,
-  metadata: DataSourceMetadata
+  metadata: DataSourceMetadata,
+  connectionString?: string
 ): Promise<AdhocQueryResponse> {
+  // Reduce metadata for large databases based on user question
+  let reducedMetadata = metadata;
+  const allTables = metadata.tables || [];
+  
+  if (allTables.length > 10) {
+    console.log(`[LLM-SERVICE] Large database detected (${allTables.length} tables), reducing metadata for ad-hoc query`);
+    try {
+      reducedMetadata = await reduceMetadataForAdhocQuery(userQuestion, metadata, connectionString);
+      console.log(`[LLM-SERVICE] Using reduced metadata with ${reducedMetadata.tables.length} tables`);
+    } catch (error) {
+      console.warn('[LLM-SERVICE] Metadata reduction failed, using full metadata:', error);
+      // Continue with full metadata (may fail with very large databases)
+    }
+  }
+
   const prompt = MASTER_PROMPT_TEMPLATE
     .replace('{MODE}', 'ADHOC_QUERY')
-    .replace('{DATA_SOURCE_METADATA}', formatMetadata(metadata))
+    .replace('{DATA_SOURCE_METADATA}', formatMetadata(reducedMetadata))
     .replace('{USER_QUESTION}', userQuestion);
 
   const response = await openai.chat.completions.create({
@@ -446,7 +462,7 @@ export async function generateAdhocQuery(
     messages: [
       {
         role: 'system',
-        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. Use any SQL features needed (WHERE, GROUP BY, ORDER BY, LIMIT, aggregates, aliases). CRITICAL: For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR(), MONTH() - this ensures charts show multiple data points. Always return valid JSON only.',
+        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. Use any SQL features needed (WHERE, GROUP BY, ORDER BY, LIMIT, aggregates, aliases). CRITICAL RULES: 1) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR(), MONTH() - this ensures charts show multiple data points. 2) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function. Always return valid JSON only.',
       },
       {
         role: 'user',
@@ -478,7 +494,7 @@ export async function generateDashboardMetrics(
     messages: [
       {
         role: 'system',
-        content: 'You are an expert analytics dashboard generator that works with ANY type of data (business, healthcare, education, finance, retail, etc.). Analyze the provided metadata to understand the data domain and column structure. Generate 6-8 key dashboard metrics that: 1) Cover ALL visualization types (gauge, bar_chart, pie_chart, line_chart, scatter_plot, table), 2) Are the MOST IMPORTANT questions for THIS specific dataset, 3) Use actual column names from metadata, 4) Generate diverse query types that naturally produce different visualizations, 5) Handle date/time queries properly using YEAR(), MONTH(), DAY(), DATE() functions when temporal analysis is needed. Always return valid JSON only.',
+        content: 'You are an expert analytics dashboard generator that works with ANY type of data (business, healthcare, education, finance, retail, etc.). Analyze the provided metadata to understand the data domain and column structure. Generate 6-8 key dashboard metrics that: 1) Cover ALL visualization types (gauge, bar_chart, pie_chart, line_chart, scatter_plot, table), 2) Are the MOST IMPORTANT questions for THIS specific dataset, 3) Use actual column names from metadata, 4) Generate diverse query types that naturally produce different visualizations, 5) Handle date/time queries properly using YEAR(), MONTH(), DAY(), DATE() functions when temporal analysis is needed, 6) CRITICAL: Only generate queries that will return data - use columns that exist in the metadata, avoid filters that might exclude all rows, use COUNT(*) or aggregations that will always return results, prefer queries that show distributions or aggregations rather than specific filters that might be empty. Always return valid JSON only.',
       },
       {
         role: 'user',
@@ -501,6 +517,7 @@ export async function generateDashboardMetrics(
  * Agent-based query generation using LangGraph
  * 
  * Uses the QueryAgent for multi-step query generation with validation and refinement
+ * The agent internally handles schema exploration to reduce metadata based on the question
  */
 export async function generateAdhocQueryWithLangGraphAgent(
   userQuestion: string,
@@ -514,8 +531,22 @@ export async function generateAdhocQueryWithLangGraphAgent(
 
     console.log('[LLM-SERVICE] Using LangGraph agent for query generation');
 
-    // Execute agent workflow
-    const query = await agent.execute(userQuestion, metadata, connectionString);
+    // Reduce metadata first for large databases (agent will further refine during schema exploration)
+    let reducedMetadata = metadata;
+    const allTables = metadata.tables || [];
+    
+    if (allTables.length > 10 && connectionString) {
+      console.log(`[LLM-SERVICE] Pre-reducing metadata (${allTables.length} tables) before agent execution`);
+      try {
+        reducedMetadata = await reduceMetadataForAdhocQuery(userQuestion, metadata, connectionString);
+        console.log(`[LLM-SERVICE] Pre-reduced to ${reducedMetadata.tables.length} tables`);
+      } catch (error) {
+        console.warn('[LLM-SERVICE] Pre-reduction failed, agent will handle it:', error);
+      }
+    }
+
+    // Execute agent workflow (agent will further explore schema if needed)
+    const query = await agent.execute(userQuestion, reducedMetadata, connectionString);
 
     // Generate insight summary
     const insightPrompt = `Explain what this SQL query does and what insights it provides:\n\n${query}\n\nQuestion: ${userQuestion}`;
@@ -540,8 +571,209 @@ export async function generateAdhocQueryWithLangGraphAgent(
     };
   } catch (error) {
     console.error('[LLM-SERVICE] LangGraph agent failed, falling back to direct LLM:', error);
-    // Fallback to original method
-    return generateAdhocQuery(userQuestion, metadata);
+    // Fallback to original method (which also reduces metadata)
+    return generateAdhocQuery(userQuestion, metadata, connectionString);
+  }
+}
+
+/**
+ * Identifies key tables for dashboard metrics generation
+ * 
+ * For dashboard metrics, we want tables that have:
+ * - Numeric columns (for aggregations)
+ * - Date columns (for time series)
+ * - Category columns (for distributions)
+ */
+async function identifyKeyTablesForDashboard(
+  metadata: DataSourceMetadata,
+  maxTables: number = 10
+): Promise<string[]> {
+  const allTables = metadata.tables || [];
+  
+  // If we have few tables, return all
+  if (allTables.length <= maxTables) {
+    return allTables.map(t => t.name);
+  }
+
+    // Score tables based on their usefulness for dashboard metrics
+    const tableScores = allTables.map(table => {
+      let score = 0;
+      const columns = table.columns || [];
+      
+      // Check for numeric columns (for aggregations)
+      const numericColumns = columns.filter(col => 
+        ['INT', 'INTEGER', 'BIGINT', 'DECIMAL', 'FLOAT', 'DOUBLE', 'NUMERIC', 'REAL'].includes(
+          col.type?.toUpperCase() || ''
+        ) || col.name?.match(/\b(count|total|sum|avg|amount|price|value|score|rating|percentage)\b/i)
+      );
+      score += numericColumns.length * 2;
+      
+      // Check for date columns (for time series)
+      const dateColumns = columns.filter(col =>
+        ['DATE', 'DATETIME', 'TIMESTAMP', 'TIME'].includes(col.type?.toUpperCase() || '') ||
+        col.name?.match(/\b(date|time|created|updated|timestamp|period|year|month|day)\b/i)
+      );
+      score += dateColumns.length * 3; // Date columns are very valuable
+    
+    // Check for category/status columns (for distributions)
+    const categoryColumns = columns.filter(col =>
+      col.name?.match(/\b(status|type|category|class|group|region|state|country|department|stream)\b/i)
+    );
+    score += categoryColumns.length * 1.5;
+    
+    // Prefer tables with more columns (more data to analyze)
+    score += columns.length * 0.1;
+    
+    return { name: table.name, score };
+  });
+  
+  // Sort by score and take top tables
+  tableScores.sort((a, b) => b.score - a.score);
+  const selectedTables = tableScores.slice(0, maxTables).map(t => t.name);
+  
+  console.log(`[LLM-SERVICE] Selected ${selectedTables.length} key tables for dashboard: ${selectedTables.join(', ')}`);
+  
+  return selectedTables;
+}
+
+/**
+ * Creates reduced metadata with only selected tables
+ */
+function createReducedMetadata(
+  metadata: DataSourceMetadata,
+  selectedTables: string[]
+): DataSourceMetadata {
+  return {
+    ...metadata,
+    tables: metadata.tables.filter(table => selectedTables.includes(table.name))
+  };
+}
+
+/**
+ * Reduces metadata for ad-hoc queries based on user question
+ * 
+ * For ad-hoc queries, we need to identify relevant tables based on the question,
+ * not just based on column types. This prevents context length errors with large databases.
+ */
+async function reduceMetadataForAdhocQuery(
+  userQuestion: string,
+  metadata: DataSourceMetadata,
+  connectionString?: string
+): Promise<DataSourceMetadata> {
+  const allTables = metadata.tables || [];
+  
+  // If we have few tables, return all
+  if (allTables.length <= 10) {
+    return metadata;
+  }
+
+  try {
+    // For SQL databases with connection string, use schema exploration
+    if (metadata.source_type === 'SQL_DB' && connectionString) {
+      try {
+        const { exploreSchemaWithPythonAgent } = await import('./python-agent-bridge');
+        
+        console.log(`[LLM-SERVICE] Exploring schema for question: "${userQuestion}"`);
+        const exploredMetadata = await exploreSchemaWithPythonAgent(
+          userQuestion,
+          connectionString
+        );
+        
+        console.log(`[LLM-SERVICE] Schema exploration found ${exploredMetadata.tables?.length || 0} relevant tables`);
+        return exploredMetadata;
+      } catch (error) {
+        console.warn('[LLM-SERVICE] Schema exploration failed, using table identification:', error);
+        // Fall through to table identification approach
+      }
+    }
+    
+    // Fallback: Use LLM to identify relevant tables based on question
+    const { identifyRelevantTables } = await import('../agents/tools/schema-explorer');
+    const relevantTables = await identifyRelevantTables(
+      userQuestion,
+      allTables.map(t => t.name)
+    );
+    
+    console.log(`[LLM-SERVICE] Identified ${relevantTables.length} relevant tables for question: ${relevantTables.join(', ')}`);
+    
+    return createReducedMetadata(metadata, relevantTables);
+  } catch (error) {
+    console.error('[LLM-SERVICE] Metadata reduction failed, using first 10 tables:', error);
+    // Last resort: use first 10 tables
+    return createReducedMetadata(metadata, allTables.slice(0, 10).map(t => t.name));
+  }
+}
+
+/**
+ * Agent-based dashboard metrics generation
+ * 
+ * Uses schema exploration to identify key tables and reduce metadata size
+ * before generating dashboard metrics. This prevents context length errors
+ * with large databases.
+ */
+export async function generateDashboardMetricsWithAgent(
+  metadata: DataSourceMetadata,
+  connectionString?: string
+): Promise<DashboardMetricsResponse> {
+  try {
+    console.log('[LLM-SERVICE] Using agent-based approach for dashboard metrics');
+    
+    // For SQL databases with connection string, use schema exploration
+    if (metadata.source_type === 'SQL_DB' && connectionString) {
+      try {
+        // Import schema explorer
+        const { exploreSchemaWithPythonAgent } = await import('./python-agent-bridge');
+        
+        // Use a generic question to identify key tables for dashboard
+        const dashboardQuestion = 'Generate dashboard metrics showing key insights, trends, distributions, and comparisons';
+        
+        console.log('[LLM-SERVICE] Exploring schema for dashboard metrics');
+        const exploredMetadata = await exploreSchemaWithPythonAgent(
+          dashboardQuestion,
+          connectionString
+        );
+        
+        // Use explored metadata (already reduced to relevant tables)
+        console.log(`[LLM-SERVICE] Using explored metadata with ${exploredMetadata.tables?.length || 0} tables`);
+        return await generateDashboardMetrics(exploredMetadata);
+      } catch (error) {
+        console.warn('[LLM-SERVICE] Schema exploration failed, using table selection:', error);
+        // Fall through to table selection approach
+      }
+    }
+    
+    // For other cases or if schema exploration fails, use table selection
+    const allTables = metadata.tables.map(t => t.name);
+    
+    if (allTables.length > 10) {
+      console.log(`[LLM-SERVICE] Large database detected (${allTables.length} tables), selecting key tables`);
+      
+      // Identify key tables
+      const keyTables = await identifyKeyTablesForDashboard(metadata, 10);
+      
+      // Create reduced metadata
+      const reducedMetadata = createReducedMetadata(metadata, keyTables);
+      
+      console.log(`[LLM-SERVICE] Using reduced metadata with ${reducedMetadata.tables.length} tables`);
+      return await generateDashboardMetrics(reducedMetadata);
+    }
+    
+    // For smaller databases, use original metadata
+    console.log('[LLM-SERVICE] Using full metadata for dashboard metrics');
+    return await generateDashboardMetrics(metadata);
+    
+  } catch (error) {
+    console.error('[LLM-SERVICE] Agent-based dashboard metrics failed, falling back to direct LLM:', error);
+    // Fallback: try with reduced metadata if original fails
+    try {
+      const keyTables = await identifyKeyTablesForDashboard(metadata, 8);
+      const reducedMetadata = createReducedMetadata(metadata, keyTables);
+      return await generateDashboardMetrics(reducedMetadata);
+    } catch (fallbackError) {
+      console.error('[LLM-SERVICE] Fallback also failed, using original method:', fallbackError);
+      // Last resort: use original method (may fail with very large databases)
+      return await generateDashboardMetrics(metadata);
+    }
   }
 }
 

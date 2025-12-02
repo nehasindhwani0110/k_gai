@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { 
   generateAdhocQuery, 
   generateDashboardMetrics,
-  generateAdhocQueryWithLangGraphAgent
+  generateAdhocQueryWithLangGraphAgent,
+  generateDashboardMetricsWithAgent
 } from '@/analytics-engine/services/llm-service';
 import { validateMetadata } from '@/analytics-engine/services/schema-introspection';
 import { validateSQLQuery } from '@/analytics-engine/services/query-executor';
@@ -73,25 +74,27 @@ export async function POST(request: NextRequest) {
             );
           } catch (error) {
             console.warn('[API] Agent generation failed, falling back to direct LLM:', error);
-            // Fallback to original method
+            // Fallback to original method (which now reduces metadata)
             result = await generateAdhocQuery(
               body.user_question,
-              body.metadata
+              body.metadata,
+              connectionString
             );
           }
         } else if (!result) {
-          // No agent available, use direct LLM
+          // No agent available, use direct LLM (which now reduces metadata)
           result = await generateAdhocQuery(
             body.user_question,
-            body.metadata
+            body.metadata,
+            connectionString
           );
         }
       } else {
         // Use original direct LLM method
         result = await generateAdhocQuery(
-          body.user_question,
-          body.metadata
-        );
+        body.user_question,
+        body.metadata
+      );
       }
 
       // Validate generated SQL query if it's SQL_QUERY type
@@ -115,7 +118,29 @@ export async function POST(request: NextRequest) {
 
     // Handle DASHBOARD_METRICS mode
     if (body.mode === 'DASHBOARD_METRICS') {
-      const result = await generateDashboardMetrics(body.metadata);
+      // Check if agent-based generation is requested
+      const useAgent = (body as any).use_agent ?? process.env.USE_AGENT_BASED_QUERIES === 'true';
+      const connectionString = (body as any).connection_string;
+      
+      let result;
+      
+      // Use agent-based approach for large databases or if explicitly requested
+      if (useAgent || (body.metadata.tables && body.metadata.tables.length > 10)) {
+        try {
+          console.log('[API] Using agent-based approach for dashboard metrics');
+          result = await generateDashboardMetricsWithAgent(
+            body.metadata,
+            connectionString
+          );
+        } catch (error) {
+          console.warn('[API] Agent-based dashboard metrics failed, falling back to direct LLM:', error);
+          // Fallback to original method
+          result = await generateDashboardMetrics(body.metadata);
+        }
+      } else {
+        // Use original direct LLM method for smaller databases
+        result = await generateDashboardMetrics(body.metadata);
+      }
 
       // Post-process queries to fix table names and ensure compatibility
       const processedMetrics = postProcessDashboardMetrics(

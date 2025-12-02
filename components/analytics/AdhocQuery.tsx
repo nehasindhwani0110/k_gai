@@ -13,11 +13,108 @@ interface AdhocQueryProps {
   metadata: any;
 }
 
+interface DataModalProps {
+  title: string;
+  query: string;
+  data: any[];
+  onClose: () => void;
+}
+
+function DataModal({ title, query, data, onClose }: DataModalProps) {
+  return (
+    <div 
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <div 
+        className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Modal Header */}
+        <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white p-6 flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold mb-2">{title}</h2>
+            <p className="text-blue-100 text-sm">Detailed data view</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors"
+            aria-label="Close modal"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Modal Content */}
+        <div className="flex-1 overflow-auto p-6">
+          {/* Query Info */}
+          {query && (
+            <div className="mb-6 bg-gray-50 rounded-lg p-4">
+              <h3 className="font-semibold text-gray-700 mb-2">Generated Query:</h3>
+              <pre className="bg-white p-3 rounded border overflow-x-auto text-sm font-mono">
+                {query}
+              </pre>
+            </div>
+          )}
+
+          {/* Data Table */}
+          {data.length > 0 && (
+            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+              <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
+                <h3 className="font-semibold text-gray-700">
+                  Data ({data.length} {data.length === 1 ? 'row' : 'rows'})
+                </h3>
+              </div>
+              <div className="overflow-x-auto max-h-[400px]">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      {Object.keys(data[0]).map((key) => (
+                        <th key={key} className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200">
+                          {key}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {data.map((row, index) => (
+                      <tr key={index} className="hover:bg-gray-50 transition-colors">
+                        {Object.values(row).map((value: any, cellIndex) => (
+                          <td key={cellIndex} className="px-4 py-3 text-gray-700 whitespace-nowrap">
+                            {typeof value === 'number' ? value.toLocaleString() : String(value || '-')}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Modal Footer */}
+        <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AdhocQuery({ metadata }: AdhocQueryProps) {
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AdhocQueryResponse | null>(null);
   const [queryResults, setQueryResults] = useState<any[]>([]);
+  const [showDataModal, setShowDataModal] = useState(false);
 
   const handleQuestionSelect = (selectedQuestion: string) => {
     setQuestion(selectedQuestion);
@@ -96,6 +193,9 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
         // For SQL databases, include connection_string if available
         requestBody.connection_string = process.env.NEXT_PUBLIC_DB_CONNECTION_STRING || metadata?.connection_string;
       }
+
+      // Include user question for better query fixing
+      requestBody.user_question = question;
 
       const response = await fetch('/api/analytics/execute', {
         method: 'POST',
@@ -192,8 +292,19 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
               let vizType: VisualizationType = result.visualization_type as VisualizationType;
               
               // Auto-select visualization type if needed
+              // Pass both query content and user question for better context
               if (vizType === 'auto' || !vizType) {
-                vizType = autoSelectVisualizationType(queryResults, result.query_content || '');
+                vizType = autoSelectVisualizationType(
+                  queryResults, 
+                  result.query_content || '', 
+                  question
+                );
+                console.log('[AdhocQuery] Selected visualization:', {
+                  vizType,
+                  rowCount: queryResults.length,
+                  keys: queryResults.length > 0 ? Object.keys(queryResults[0]) : [],
+                  question: question.substring(0, 50)
+                });
               }
               
               // Ensure we never pass 'auto' to the renderer
@@ -202,7 +313,11 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
               }
               
               return (
-                <div className="mt-6">
+                <div 
+                  className="mt-6 cursor-pointer hover:opacity-90 transition-opacity"
+                  onClick={() => setShowDataModal(true)}
+                  title="Click to view detailed data"
+                >
                   <VisualizationRenderer
                     type={vizType}
                     data={queryResults}
@@ -220,6 +335,16 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
             }
           })()}
         </div>
+      )}
+
+      {/* Data Details Modal */}
+      {showDataModal && queryResults.length > 0 && (
+        <DataModal
+          title={question || 'Query Results'}
+          query={result?.query_content || ''}
+          data={queryResults}
+          onClose={() => setShowDataModal(false)}
+        />
       )}
     </div>
   );

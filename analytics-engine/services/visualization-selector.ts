@@ -2,11 +2,12 @@ import { VisualizationType } from '../types';
 
 /**
  * Automatically selects the best visualization type based on query results
- * This makes the AI decide visualization type based on actual data, not prompts
+ * Completely generic - works for any multi-tenant application without hardcoding field names
  */
 export function autoSelectVisualizationType(
   data: any[],
-  queryContent: string
+  queryContent: string,
+  userQuestion?: string
 ): VisualizationType {
   if (!data || data.length === 0) {
     return 'table';
@@ -15,23 +16,33 @@ export function autoSelectVisualizationType(
   const rowCount = data.length;
   const firstRow = data[0];
   const keys = Object.keys(firstRow);
+  
+  // Detect numeric and string columns generically
   const numericKeys = keys.filter(key => {
     const value = firstRow[key];
-    return typeof value === 'number' || !isNaN(Number(value));
+    return value !== null && value !== undefined && 
+           (typeof value === 'number' || (!isNaN(Number(value)) && value !== ''));
   });
+  
   const stringKeys = keys.filter(key => {
     const value = firstRow[key];
-    return typeof value === 'string' && isNaN(Number(value));
+    return value !== null && value !== undefined && 
+           typeof value === 'string' && 
+           isNaN(Number(value)) && 
+           value !== '';
   });
 
-  // Analyze query content for hints
-  const queryLower = queryContent.toLowerCase();
+  // Combine query content and user question for better context
+  const fullContext = `${queryContent || ''} ${userQuestion || ''}`.toLowerCase();
+  
+  // Analyze query patterns generically
   const hasGroupBy = /group\s+by/i.test(queryContent);
   const hasOrderBy = /order\s+by/i.test(queryContent);
-  const hasAggregate = /(count|sum|avg|max|min|average)\(/i.test(queryContent);
-  const isDistribution = /distribution|breakdown|split|by\s+\w+/i.test(queryContent);
-  const isComparison = /compare|comparison|versus|vs|by\s+\w+/i.test(queryContent);
-  const isTrend = /trend|over\s+time|year|month|quarter|growth|change/i.test(queryContent);
+  const hasAggregate = /(count|sum|avg|max|min|average|total)\(/i.test(queryContent);
+  const isDistribution = /distribution|breakdown|split|grouped|by\s+\w+|each\s+\w+/i.test(fullContext);
+  const isComparison = /compare|comparison|versus|vs|by\s+\w+/i.test(fullContext);
+  const isTrend = /trend|over\s+time|year|month|quarter|growth|change|historical/i.test(fullContext);
+  const isRanking = /top|bottom|highest|lowest|best|worst|rank/i.test(fullContext);
 
   // Single value result (aggregate like AVG, COUNT, SUM without GROUP BY)
   if (rowCount === 1 && numericKeys.length === 1 && keys.length <= 2 && !hasGroupBy) {
@@ -74,32 +85,35 @@ export function autoSelectVisualizationType(
     }
   }
 
-  // Distribution/Comparison data with GROUP BY (2-15 categories)
-  if (hasGroupBy && rowCount >= 2 && rowCount <= 15 && stringKeys.length >= 1 && numericKeys.length >= 1) {
-    // Check if it's a percentage distribution (values sum to exactly 100)
+  // Distribution queries with GROUP BY - prioritize bar/pie charts
+  if (hasGroupBy && rowCount >= 2 && stringKeys.length >= 1 && numericKeys.length >= 1) {
+    // Calculate total for percentage detection
     const total = data.reduce((sum, row) => {
       const numKey = numericKeys[0];
-      return sum + (Number(row[numKey]) || 0);
+      const val = Number(row[numKey]) || 0;
+      return sum + val;
     }, 0);
     
-    // Only use pie chart if:
-    // 1. Values explicitly sum to 100 (percentage distribution)
-    // 2. Query explicitly mentions "distribution" AND values sum close to 100
-    // 3. Small number of categories (2-8) for readability
-    const isExactPercentage = Math.abs(total - 100) < 0.1;
-    const isCloseToPercentage = Math.abs(total - 100) < 2 && isDistribution;
+    // Check if values sum to 100 (percentage distribution)
+    const isPercentage = total > 0 && Math.abs(total - 100) < 1;
     
-    if ((isExactPercentage || isCloseToPercentage) && rowCount >= 2 && rowCount <= 8) {
-      return 'pie_chart';
+    // For distribution queries, prefer charts over tables
+    if (isDistribution || isComparison) {
+      // Pie chart for small distributions (2-8 categories) that sum to 100
+      if (isPercentage && rowCount >= 2 && rowCount <= 8) {
+        return 'pie_chart';
+      }
+      
+      // Bar chart for distributions (more readable, especially for many categories)
+      if (rowCount >= 2 && rowCount <= 30) {
+        return 'bar_chart';
+      }
     }
     
-    // For rankings and comparisons, prefer bar chart (more readable)
-    if (hasOrderBy && rowCount <= 15) {
+    // Default: bar chart for GROUP BY queries with categories
+    if (rowCount >= 2 && rowCount <= 30) {
       return 'bar_chart';
     }
-    
-    // Default to bar chart for most comparisons (better than pie for readability)
-    return 'bar_chart';
   }
 
   // Distribution data (many categories with GROUP BY)
@@ -122,10 +136,14 @@ export function autoSelectVisualizationType(
     return 'scatter_plot';
   }
 
-  // Comparison queries with multiple numeric values (no GROUP BY but has categories)
-  if (rowCount >= 2 && rowCount <= 20 && numericKeys.length >= 1 && stringKeys.length >= 1) {
-    // Prefer bar chart for comparisons
-    return 'bar_chart';
+  // Comparison queries with categories and values (no GROUP BY but has both string and numeric)
+  if (rowCount >= 2 && rowCount <= 30 && numericKeys.length >= 1 && stringKeys.length >= 1 && !hasGroupBy) {
+    // If it's a distribution/comparison question, use bar chart
+    if (isDistribution || isComparison) {
+      return 'bar_chart';
+    }
+    // Otherwise table might be better
+    return 'table';
   }
 
   // Ranking queries (ORDER BY with LIMIT) - prefer bar chart or table

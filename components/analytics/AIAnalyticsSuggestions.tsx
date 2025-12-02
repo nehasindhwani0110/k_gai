@@ -27,10 +27,23 @@ export default function AIAnalyticsSuggestions({ metadata, onQuestionSelect }: A
 
     setLoading(true);
     try {
+      // Get connection string for SQL databases (from metadata or sessionStorage)
+      const connectionString = metadata?.connection_string || 
+        (typeof window !== 'undefined' ? sessionStorage.getItem('connectionString') : null) ||
+        process.env.NEXT_PUBLIC_DB_CONNECTION_STRING;
+      
+      // Check if agents should be used (for large databases)
+      const useAgent = process.env.NEXT_PUBLIC_USE_AGENT_BASED_QUERIES === 'true' || 
+        (metadata?.tables && metadata.tables.length > 10);
+      
       const response = await fetch('/api/analytics/suggestions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ metadata }),
+        body: JSON.stringify({
+          metadata,
+          ...(useAgent && { use_agent: true }),
+          ...(connectionString && { connection_string: connectionString }),
+        }),
       });
 
       if (!response.ok) {

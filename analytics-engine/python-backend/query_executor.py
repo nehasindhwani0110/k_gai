@@ -38,6 +38,20 @@ def execute_sql_query(connection_string: str, query: str) -> List[Dict]:
             # Convert to list of dictionaries
             columns = result.keys()
             return [dict(zip(columns, row)) for row in rows]
+    except Exception as e:
+        # Capture detailed error information
+        error_message = str(e)
+        error_type = type(e).__name__
+        
+        # Provide more helpful error messages for common SQL errors
+        if 'Unknown column' in error_message or 'doesn\'t exist' in error_message or 'Unknown column' in error_message:
+            raise ValueError(f"Column error: {error_message}. Please check column names in the query.")
+        elif 'Table' in error_message and 'doesn\'t exist' in error_message:
+            raise ValueError(f"Table error: {error_message}. Please check table name in the query.")
+        elif 'syntax' in error_message.lower():
+            raise ValueError(f"SQL syntax error: {error_message}")
+        else:
+            raise ValueError(f"Query execution failed ({error_type}): {error_message}")
     finally:
         engine.dispose()
 

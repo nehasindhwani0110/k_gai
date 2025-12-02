@@ -13,6 +13,7 @@ interface ExecuteRequest {
   file_type?: 'CSV' | 'JSON' | 'EXCEL' | 'TXT';
   data_source_id?: string; // For canonical mapping
   is_canonical_query?: boolean; // If true, translate query before execution
+  user_question?: string; // Original user question for query fixing
 }
 
 export async function POST(request: NextRequest) {
@@ -100,7 +101,8 @@ export async function POST(request: NextRequest) {
         results = await executeSQLQuery(
           body.connection_string,
           queryToExecute,
-          body.data_source_id
+          body.data_source_id,
+          body.user_question
         );
       }
     } else if (body.query_type === 'QUERY_LOGIC') {

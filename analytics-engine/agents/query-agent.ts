@@ -115,6 +115,7 @@ Requirements:
 2. Only generate SELECT queries (no INSERT, UPDATE, DELETE)
 3. Use proper SQL syntax
 4. Include appropriate WHERE, GROUP BY, ORDER BY, LIMIT clauses as needed
+5. CRITICAL - MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If a column is needed but cannot be grouped, wrap it in MIN() or MAX() aggregate function.
 
 Return ONLY the SQL query, no explanations:`;
 

@@ -39,6 +39,24 @@ async function main() {
 
   console.log('✅ Created School B:', schoolB.email);
 
+  // Create Real Estate Tenant
+  const realEstate = await prisma.school.upsert({
+    where: { email: 'realestate@gmail.com' },
+    update: {},
+    create: {
+      email: 'realestate@gmail.com',
+      password: hashedPassword,
+      name: 'Real Estate Project',
+      // Railway MySQL connection string (password URL encoded)
+      connectionString: 'mysql://root:gAcLdzlQwbbziiCoQhddgALsiQnwzBcn@switchback.proxy.rlwy.net:13455/railway',
+      isActive: true,
+    },
+  });
+
+  console.log('✅ Created Real Estate Tenant:', realEstate.email);
+  console.log('   Connection: Railway MySQL Database');
+  console.log('   Schema will be auto-detected on first login');
+
   console.log('✨ Seeding completed!');
 }
 
