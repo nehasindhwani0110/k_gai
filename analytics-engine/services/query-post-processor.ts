@@ -11,8 +11,9 @@ export function postProcessDashboardMetrics(
   return metrics.map(metric => {
     let processedQuery = metric.query_content;
 
-    // For CSV files, ensure queries use correct table name or remove table name requirement
-    if (metadata.source_type === 'CSV_FILE' && metadata.tables && metadata.tables.length > 0) {
+    // For all file-based sources (CSV, Excel, JSON, Text), ensure queries use correct table name
+    const fileBasedSources = ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'];
+    if (fileBasedSources.includes(metadata.source_type) && metadata.tables && metadata.tables.length > 0) {
       const tableName = metadata.tables[0].name;
       
       // Replace any table name in FROM clause with the actual table name
@@ -31,7 +32,7 @@ export function postProcessDashboardMetrics(
         );
       }
 
-      // Ensure query_type is SQL_QUERY for CSV files
+      // Ensure query_type is SQL_QUERY for file-based sources
       if (metric.query_type !== 'SQL_QUERY') {
         return {
           ...metric,

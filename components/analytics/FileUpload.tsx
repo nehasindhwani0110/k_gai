@@ -25,11 +25,7 @@ export default function FileUpload({ onFileProcessed }: FileUploadProps) {
       return;
     }
 
-    // Validate file size (max 10MB)
-    if (file.size > 10 * 1024 * 1024) {
-      toast.error('File size must be less than 10MB');
-      return;
-    }
+    // No file size limit - allow any size
 
     setUploading(true);
     try {
@@ -174,7 +170,6 @@ export default function FileUpload({ onFileProcessed }: FileUploadProps) {
             <p className="text-sm text-gray-500">
               Drag and drop a file here (CSV, JSON, Excel, or Text), or click to browse
             </p>
-            <p className="text-xs text-gray-400 mt-2">Maximum file size: 10MB</p>
           </div>
         )}
       </div>

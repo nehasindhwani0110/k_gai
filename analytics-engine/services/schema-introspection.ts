@@ -41,7 +41,24 @@ export function validateMetadata(metadata: DataSourceMetadata): boolean {
     return false;
   }
 
-  if (!['SQL_DB', 'CANONICAL_DB', 'CSV_FILE'].includes(metadata.source_type)) {
+  // Accept all valid source types including file-based sources
+  const validSourceTypes = [
+    'SQL_DB', 
+    'CANONICAL_DB', 
+    'CSV_FILE', 
+    'EXCEL_FILE', 
+    'JSON_FILE', 
+    'TXT_FILE', 
+    'GOOGLE_DRIVE'
+  ];
+  
+  if (!validSourceTypes.includes(metadata.source_type)) {
+    return false;
+  }
+
+  // For file-based sources, file_path should be present
+  const fileBasedSources = ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'];
+  if (fileBasedSources.includes(metadata.source_type) && !metadata.file_path) {
     return false;
   }
 

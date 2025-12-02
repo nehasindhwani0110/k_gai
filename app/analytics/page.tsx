@@ -39,32 +39,95 @@ export default function AnalyticsPage() {
   const loadMetadata = async () => {
     setLoading(true);
     try {
-      // Check if school is logged in
-      const schoolId = sessionStorage.getItem('schoolId');
+      // Check if data source is configured
+      const isConfigured = sessionStorage.getItem('isConfigured');
       const dataSourceId = sessionStorage.getItem('dataSourceId');
+      const dataSourceType = sessionStorage.getItem('dataSourceType');
       
-      if (schoolId && dataSourceId) {
-        // Load schema from logged-in school's data source
+      if (isConfigured === 'true' && dataSourceId) {
+        // Load schema from configured data source
         console.log(`[ANALYTICS] Loading schema for dataSourceId: ${dataSourceId}`);
-        const response = await fetch(`/api/analytics/data-sources/${dataSourceId}/schema`);
         
-        if (!response.ok) {
-          throw new Error(`Failed to load schema: ${response.statusText}`);
+        if (dataSourceType === 'SQL_DB') {
+          // For SQL databases, load schema from API
+          const response = await fetch(`/api/analytics/data-sources/${dataSourceId}/schema`);
+          
+          if (!response.ok) {
+            throw new Error(`Failed to load schema: ${response.statusText}`);
+          }
+          
+          const schemaMetadata = await response.json();
+          console.log(`[ANALYTICS] Schema loaded:`, schemaMetadata);
+          
+          if (schemaMetadata.error) {
+            throw new Error(schemaMetadata.error);
+          }
+          
+          // Store connection_string in sessionStorage if available
+          if (schemaMetadata.connection_string && typeof window !== 'undefined') {
+            sessionStorage.setItem('connectionString', schemaMetadata.connection_string);
+          }
+          
+          setMetadata(schemaMetadata);
+          setDataSourceType('example'); // Mark as SQL DB source
+        } else {
+          // For file-based sources (CSV, Excel, JSON), load schema from file
+          const filePath = sessionStorage.getItem('filePath');
+          if (filePath) {
+            // Determine file type from dataSourceType
+            let fileType: 'CSV' | 'JSON' | 'EXCEL' | 'TXT' = 'CSV';
+            if (dataSourceType === 'EXCEL_FILE') {
+              fileType = 'EXCEL';
+            } else if (dataSourceType === 'JSON_FILE') {
+              fileType = 'JSON';
+            } else if (dataSourceType === 'TXT_FILE') {
+              fileType = 'TXT';
+            } else if (dataSourceType === 'GOOGLE_DRIVE') {
+              // For Google Drive, detect from file extension
+              const ext = filePath.toLowerCase().split('.').pop();
+              if (ext === 'json') fileType = 'JSON';
+              else if (ext === 'xlsx' || ext === 'xls') fileType = 'EXCEL';
+              else if (ext === 'txt') fileType = 'TXT';
+              else fileType = 'CSV';
+            } else {
+              // Detect from file extension
+              const ext = filePath.toLowerCase().split('.').pop();
+              if (ext === 'json') fileType = 'JSON';
+              else if (ext === 'xlsx' || ext === 'xls') fileType = 'EXCEL';
+              else if (ext === 'txt') fileType = 'TXT';
+              else fileType = 'CSV';
+            }
+            
+            // For Google Drive, use CSV_FILE as source_type for schema API
+            const schemaSourceType = dataSourceType === 'GOOGLE_DRIVE' ? 'CSV_FILE' : dataSourceType;
+            
+            const response = await fetch('/api/analytics/schema', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                source_type: schemaSourceType,
+                file_path: filePath,
+                file_type: fileType,
+              }),
+            });
+            
+            if (!response.ok) {
+              const errorData = await response.json().catch(() => ({}));
+              throw new Error(errorData.error || `Failed to load file schema: ${response.statusText}`);
+            }
+            
+            const schemaMetadata = await response.json();
+            setMetadata(schemaMetadata);
+            setDataSourceType('csv'); // Mark as file source
+          }
         }
-        
-        const schemaMetadata = await response.json();
-        console.log(`[ANALYTICS] Schema loaded:`, schemaMetadata);
-        
-        if (schemaMetadata.error) {
-          throw new Error(schemaMetadata.error);
-        }
-        
-        setMetadata(schemaMetadata);
-        setDataSourceType('example'); // Mark as SQL DB source
       } else {
-        // Fallback to example metadata if not logged in
-        console.log('[ANALYTICS] No school logged in, using example metadata');
-        setMetadata(exampleMetadata);
+        // Redirect to configuration page if not configured
+        console.log('[ANALYTICS] No data source configured, redirecting to configuration');
+        window.location.href = '/';
+        return;
       }
     } catch (error) {
       console.error('Failed to load metadata:', error);
@@ -76,6 +139,12 @@ export default function AnalyticsPage() {
   };
 
   useEffect(() => {
+    // Check if configured, if not redirect to home
+    const isConfigured = sessionStorage.getItem('isConfigured');
+    if (isConfigured !== 'true') {
+      window.location.href = '/';
+      return;
+    }
     loadMetadata();
   }, []);
 

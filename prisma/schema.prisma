@@ -5,7 +5,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite" // Can be changed to PostgreSQL, MySQL, etc.
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -44,7 +44,7 @@ model FileMetadata {
   fileType   String // CSV, JSON, EXCEL, TXT
   fileSize   Int
   tableName  String? // Generated table name
-  metadata   String // JSON string of DataSourceMetadata
+  metadata   String   @db.Text // JSON string of DataSourceMetadata (Text for large content)
   uploadedAt DateTime @default(now())
 
   @@index([fileType])
@@ -52,22 +52,6 @@ model FileMetadata {
 }
 
 // System Tables for Canonical Mapping (Multi-tenant SQL Database Support)
-
-model School {
-  id               String      @id @default(cuid())
-  email            String      @unique // School login email (e.g., "schoola@gmail.com")
-  password         String // Hashed password
-  name             String // School name (e.g., "School A")
-  connectionString String // Database connection string (e.g., "mysql://root:neha@2004@localhost:3306/gai")
-  dataSourceId     String?     @unique // Link to DataSource (created after schema detection) - unique for one-to-one relation
-  dataSource       DataSource? @relation(fields: [dataSourceId], references: [id], onDelete: SetNull)
-  isActive         Boolean     @default(true)
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
-
-  @@index([email])
-  @@index([isActive])
-}
 
 model DataSource {
   id               String   @id @default(cuid())
@@ -79,7 +63,6 @@ model DataSource {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  school         School? // Link to School (if created via school login)
   schemaMappings SchemaMapping[]
   schemaRegistry SchemaRegistry[]
 
@@ -135,10 +118,10 @@ model SchemaMapping {
 
 model EmbeddingCache {
   id        String   @id @default(cuid())
-  cacheKey  String   @unique
-  embedding String // JSON array of numbers
+  cacheKey  String   @unique @db.VarChar(500)
+  embedding String   @db.Text // JSON array of numbers
   type      String // 'table', 'column', or 'question'
-  text      String? // Original text (for reference, max 500 chars)
+  text      String? @db.Text // Original text (for reference)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

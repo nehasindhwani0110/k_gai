@@ -27,13 +27,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate file size (10MB limit)
-    if (file.size > 10 * 1024 * 1024) {
-      return NextResponse.json(
-        { error: 'File size must be less than 10MB' },
-        { status: 400 }
-      );
-    }
+    // No file size limit - allow any size
 
     // Create uploads directory if it doesn't exist
     const uploadsDir = join(process.cwd(), 'uploads');

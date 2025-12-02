@@ -66,13 +66,13 @@ export async function POST(request: NextRequest) {
           console.error('File query execution error:', error);
           throw error;
         }
-      } else if (body.source_type === 'CSV_FILE') {
-        // CSV source type but no file_path - error
-        console.error('Missing file_path for CSV_FILE source type', { source_type: body.source_type, query_type: body.query_type });
+      } else if (body.source_type === 'CSV_FILE' || body.source_type === 'EXCEL_FILE' || body.source_type === 'JSON_FILE' || body.source_type === 'TXT_FILE' || body.source_type === 'GOOGLE_DRIVE') {
+        // File-based source type but no file_path - error
+        console.error(`Missing file_path for ${body.source_type} source type`, { source_type: body.source_type, query_type: body.query_type });
         return NextResponse.json(
           { 
-            error: 'file_path is required for CSV_FILE source type',
-            details: 'Please ensure the CSV file was uploaded correctly and file_path is included in the request'
+            error: `file_path is required for ${body.source_type} source type`,
+            details: 'Please ensure the file was uploaded correctly and file_path is included in the request'
           },
           { status: 400 }
         );

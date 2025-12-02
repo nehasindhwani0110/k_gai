@@ -302,7 +302,7 @@ Generate 6-8 metrics that NATURALLY produce different visualization types. Ensur
 - Use EXACT column names from metadata
 - Use EXACT table name from metadata
 - Generate queries that NATURALLY produce the right visualization type
-- For CSV files: table name is usually filename without .csv extension
+- For CSV/Excel/JSON/Text files: table name is usually filename without extension (e.g., "complete_school_data" for "complete_school_data.xlsx")
 - Use GROUP BY for comparisons/distributions
 - Use ORDER BY + LIMIT for rankings
 - Use simple aggregates for single metrics
@@ -411,12 +411,12 @@ Generate only the JSON object, ensuring it is valid.
 - Set visualization_type to "auto" for all metrics
 - Questions should be the MOST IMPORTANT for this specific dataset
 
-**CRITICAL INSTRUCTION FOR CSV_FILE SOURCE_TYPE:**
-When source_type is CSV_FILE:
+**CRITICAL INSTRUCTION FOR FILE-BASED SOURCE TYPES (CSV_FILE, EXCEL_FILE, JSON_FILE, TXT_FILE):**
+When source_type is CSV_FILE, EXCEL_FILE, JSON_FILE, or TXT_FILE:
 1. You MUST use SQL_QUERY type (not QUERY_LOGIC) 
 2. The query_content MUST be a standard SQL SELECT statement
 3. Use ONLY the exact column names from the metadata tables provided
-4. The table name in FROM clause should match the table name from metadata (usually the CSV filename without extension)
+4. The table name in FROM clause should match the table name from metadata (usually the filename without extension)
 5. You can use ANY SQL features needed: WHERE, GROUP BY, ORDER BY, LIMIT, aggregate functions, aliases (AS)
 6. Generate the query that best answers the user's question - simple or complex
 7. Use aggregate functions (COUNT, SUM, AVG, MAX, MIN) when appropriate
@@ -425,6 +425,8 @@ When source_type is CSV_FILE:
 10. Use GROUP BY for comparisons and distributions
 11. Use WHERE for filtering
 12. Generate the EXACT query needed to answer the question accurately
+13. For Excel files: Treat them exactly like CSV files - use SQL queries with the table name from metadata
+14. For JSON/Text files: Same as CSV/Excel - use SQL queries with proper table names
 
 **CRITICAL: DATE/TIME QUERY HANDLING**
 When user asks about time-based queries (month, year, day, date, period, over time, trends):
@@ -474,19 +476,20 @@ export async function generateAdhocQuery(
   metadata: DataSourceMetadata,
   connectionString?: string
 ): Promise<AdhocQueryResponse> {
-  // Reduce metadata using semantic analysis (works for both SQL and CSV)
+  // Reduce metadata using semantic analysis (works for both SQL and file-based sources)
   let reducedMetadata = metadata;
   const allTables = metadata.tables || [];
   const totalColumns = allTables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
-  const isCSV = metadata.source_type === 'CSV_FILE';
+  const fileBasedSources = ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'];
+  const isFileBased = fileBasedSources.includes(metadata.source_type);
   
   // Use semantic matching if:
-  // 1. CSV files with many columns (>15) - helps find relevant columns within single table, OR
+  // 1. File-based sources (CSV, Excel, JSON, Text) with many columns (>15) - helps find relevant columns within single table, OR
   // 2. SQL databases with many tables (>5) or many columns (>50)
-  const shouldUseSemanticMatching = isCSV ? totalColumns > 15 : allTables.length > 5 || totalColumns > 50;
+  const shouldUseSemanticMatching = isFileBased ? totalColumns > 15 : allTables.length > 5 || totalColumns > 50;
   
   if (shouldUseSemanticMatching) {
-    console.log(`[LLM-SERVICE] Using semantic analysis for ${isCSV ? 'CSV file' : 'SQL database'} (${allTables.length} tables, ${totalColumns} columns)`);
+    console.log(`[LLM-SERVICE] Using semantic analysis for ${isFileBased ? `${metadata.source_type} file` : 'SQL database'} (${allTables.length} tables, ${totalColumns} columns)`);
     try {
       reducedMetadata = await reduceMetadataForAdhocQuery(userQuestion, metadata, connectionString);
       console.log(`[LLM-SERVICE] ✅ Semantic analysis complete! Using ${reducedMetadata.tables.length} tables`);

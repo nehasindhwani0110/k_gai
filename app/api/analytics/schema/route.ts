@@ -5,7 +5,7 @@ import { saveFileMetadata } from '@/analytics-engine/services/query-history-serv
 import * as path from 'path';
 
 interface SchemaRequest {
-  source_type: 'SQL_DB' | 'CSV_FILE';
+  source_type: 'SQL_DB' | 'CSV_FILE' | 'EXCEL_FILE' | 'JSON_FILE' | 'TXT_FILE' | 'GOOGLE_DRIVE';
   connection_string?: string;
   file_path?: string;
   file_type?: 'CSV' | 'JSON' | 'EXCEL' | 'TXT';
@@ -23,19 +23,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (body.source_type === 'CSV_FILE') {
+    // Handle all file-based source types (CSV, Excel, JSON, Text, Google Drive)
+    if (body.source_type === 'CSV_FILE' || body.source_type === 'EXCEL_FILE' || body.source_type === 'JSON_FILE' || body.source_type === 'TXT_FILE' || body.source_type === 'GOOGLE_DRIVE') {
       if (!body.file_path) {
         return NextResponse.json(
-          { error: 'file_path is required for CSV_FILE source_type' },
+          { error: 'file_path is required for file-based source types' },
           { status: 400 }
         );
       }
       
-      // Detect file type from extension if not provided
+      // Detect file type from source_type or extension if not provided
       let fileType: 'CSV' | 'JSON' | 'EXCEL' | 'TXT' = 'CSV';
       if (body.file_type) {
         fileType = body.file_type;
+      } else if (body.source_type === 'EXCEL_FILE') {
+        fileType = 'EXCEL';
+      } else if (body.source_type === 'JSON_FILE') {
+        fileType = 'JSON';
+      } else if (body.source_type === 'TXT_FILE') {
+        fileType = 'TXT';
       } else {
+        // Detect from file extension
         const ext = path.extname(body.file_path).toLowerCase();
         if (ext === '.json') fileType = 'JSON';
         else if (ext === '.xlsx' || ext === '.xls') fileType = 'EXCEL';

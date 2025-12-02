@@ -180,6 +180,47 @@ export async function getDashboardMetrics(
  */
 export async function saveFileMetadata(input: FileMetadataInput): Promise<void> {
   try {
+    // Stringify metadata
+    let metadataString = JSON.stringify(input.metadata);
+    
+    // MySQL TEXT can hold up to 65,535 bytes, but we'll be safe and limit to 60KB
+    // If metadata is too large, store a simplified version
+    const MAX_METADATA_SIZE = 100000; // 100KB limit
+    if (metadataString.length > MAX_METADATA_SIZE) {
+      console.warn(`Metadata too large (${metadataString.length} bytes), storing simplified version`);
+      
+      // Store only essential metadata: source_type, file_path, and table names
+      const simplifiedMetadata = {
+        source_type: input.metadata?.source_type || 'CSV_FILE',
+        file_path: input.metadata?.file_path || input.filePath,
+        tables: input.metadata?.tables?.map((table: any) => ({
+          name: table.name,
+          description: table.description,
+          columnCount: table.columns?.length || 0,
+          // Store only column names, not full column metadata
+          columns: table.columns?.map((col: any) => ({
+            name: col.name,
+            type: col.type,
+          })) || [],
+        })) || [],
+      };
+      
+      metadataString = JSON.stringify(simplifiedMetadata);
+      
+      // If still too large, truncate column details
+      if (metadataString.length > MAX_METADATA_SIZE) {
+        const minimalMetadata = {
+          source_type: input.metadata?.source_type || 'CSV_FILE',
+          file_path: input.metadata?.file_path || input.filePath,
+          tables: input.metadata?.tables?.map((table: any) => ({
+            name: table.name,
+            columnCount: table.columns?.length || 0,
+          })) || [],
+        };
+        metadataString = JSON.stringify(minimalMetadata);
+      }
+    }
+    
     await prisma.fileMetadata.upsert({
       where: { filePath: input.filePath },
       update: {
@@ -187,7 +228,7 @@ export async function saveFileMetadata(input: FileMetadataInput): Promise<void> 
         fileType: input.fileType,
         fileSize: input.fileSize,
         tableName: input.tableName || null,
-        metadata: JSON.stringify(input.metadata),
+        metadata: metadataString,
       },
       create: {
         fileName: input.fileName,
@@ -195,11 +236,13 @@ export async function saveFileMetadata(input: FileMetadataInput): Promise<void> 
         fileType: input.fileType,
         fileSize: input.fileSize,
         tableName: input.tableName || null,
-        metadata: JSON.stringify(input.metadata),
+        metadata: metadataString,
       },
     });
   } catch (error) {
     console.error('Error saving file metadata:', error);
+    // Re-throw to allow caller to handle
+    throw error;
   }
 }
 

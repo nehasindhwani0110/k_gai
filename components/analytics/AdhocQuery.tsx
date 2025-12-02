@@ -180,19 +180,83 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
       };
 
       // ALWAYS include file_path if it exists in metadata (regardless of source_type)
-      // This ensures CSV files work even if source_type is incorrectly set
+      // This ensures file-based sources work correctly
       if (metadata?.file_path) {
         requestBody.file_path = metadata.file_path;
-        // Also set source_type to CSV_FILE if file_path exists
-        requestBody.source_type = 'CSV_FILE';
-      } else if (metadata?.source_type === 'CSV_FILE') {
+        // Use the actual source_type from metadata or detect from file_type
+        if (metadata?.file_type) {
+          // Map file_type to source_type
+          if (metadata.file_type === 'EXCEL') {
+            requestBody.source_type = 'EXCEL_FILE';
+          } else if (metadata.file_type === 'JSON') {
+            requestBody.source_type = 'JSON_FILE';
+          } else if (metadata.file_type === 'TXT') {
+            requestBody.source_type = 'TXT_FILE';
+          } else {
+            requestBody.source_type = 'CSV_FILE';
+          }
+          requestBody.file_type = metadata.file_type;
+        } else {
+          // Fallback: detect from file extension
+          const ext = metadata.file_path.toLowerCase().split('.').pop();
+          if (ext === 'xlsx' || ext === 'xls') {
+            requestBody.source_type = 'EXCEL_FILE';
+            requestBody.file_type = 'EXCEL';
+          } else if (ext === 'json') {
+            requestBody.source_type = 'JSON_FILE';
+            requestBody.file_type = 'JSON';
+          } else if (ext === 'txt') {
+            requestBody.source_type = 'TXT_FILE';
+            requestBody.file_type = 'TXT';
+          } else {
+            requestBody.source_type = 'CSV_FILE';
+            requestBody.file_type = 'CSV';
+          }
+        }
+      } else if (metadata?.source_type === 'CSV_FILE' || metadata?.source_type === 'EXCEL_FILE' || metadata?.source_type === 'JSON_FILE' || metadata?.source_type === 'TXT_FILE' || metadata?.source_type === 'GOOGLE_DRIVE') {
         // CSV source type but no file_path - error
         toast.error('File path is missing. Please re-upload your CSV file.');
         return;
-      } else {
-        // For SQL databases, include connection_string if available
-        requestBody.connection_string = process.env.NEXT_PUBLIC_DB_CONNECTION_STRING || metadata?.connection_string;
-      }
+        } else {
+          // For SQL databases, get connection_string from multiple sources
+          let connectionString = metadata?.connection_string;
+          
+          // If not in metadata, try to fetch from data source API
+          if (!connectionString && typeof window !== 'undefined') {
+            const dataSourceId = sessionStorage.getItem('dataSourceId');
+            if (dataSourceId) {
+              try {
+                // Fetch source metadata which includes connection_string
+                const sourceResponse = await fetch(`/api/analytics/data-sources/${dataSourceId}/schema?type=source`);
+                if (sourceResponse.ok) {
+                  const sourceMetadata = await sourceResponse.json();
+                  connectionString = sourceMetadata.connection_string;
+                  // Update metadata with connection_string for future use
+                  if (connectionString && metadata) {
+                    metadata.connection_string = connectionString;
+                  }
+                }
+              } catch (error) {
+                console.warn('Failed to fetch connection_string from data source:', error);
+              }
+            }
+          }
+          
+          // Fallback to sessionStorage or env variable
+          if (!connectionString && typeof window !== 'undefined') {
+            connectionString = sessionStorage.getItem('connectionString') || undefined;
+          }
+          
+          if (!connectionString) {
+            connectionString = process.env.NEXT_PUBLIC_DB_CONNECTION_STRING || undefined;
+          }
+          
+          if (connectionString) {
+            requestBody.connection_string = connectionString;
+          } else {
+            throw new Error('Missing connection string. Please reconfigure your data source.');
+          }
+        }
 
       // Include user question for better query fixing
       requestBody.user_question = question;

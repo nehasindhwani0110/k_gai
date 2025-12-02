@@ -1,5 +1,5 @@
 export type UseCaseMode = 'ADHOC_QUERY' | 'DASHBOARD_METRICS';
-export type SourceType = 'SQL_DB' | 'CANONICAL_DB' | 'CSV_FILE';
+export type SourceType = 'SQL_DB' | 'CANONICAL_DB' | 'CSV_FILE' | 'EXCEL_FILE' | 'JSON_FILE' | 'TXT_FILE' | 'GOOGLE_DRIVE';
 export type QueryType = 'SQL_QUERY' | 'QUERY_LOGIC';
 export type VisualizationType = 
   | 'bar_chart' 

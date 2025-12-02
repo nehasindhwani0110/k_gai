@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import { parse } from 'csv-parse';
 import * as XLSX from 'xlsx';
+import { existsSync } from 'fs';
 import { executeSQLOnCSV } from './query-executor';
 import { parseDate, extractYear, extractMonth, extractDay, extractDate, isDate } from '../utils/date-utils';
 
@@ -37,6 +38,11 @@ async function executeJSONQuery(
   query: string
 ): Promise<any[]> {
   try {
+    // Check if file exists
+    if (!existsSync(filePath)) {
+      throw new Error(`JSON file not found: ${filePath}`);
+    }
+
     // Read and parse JSON
     const content = await fs.readFile(filePath, 'utf-8');
     const data = JSON.parse(content);
@@ -75,10 +81,27 @@ async function executeExcelQuery(
   query: string
 ): Promise<any[]> {
   try {
-    const workbook = XLSX.readFile(filePath);
+    // Read file as buffer for better reliability
+    const fileBuffer = await fs.readFile(filePath);
+    
+    // Parse Excel file from buffer
+    const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+    
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+      throw new Error('Excel file contains no sheets');
+    }
+
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    const records = XLSX.utils.sheet_to_json(worksheet) as any[];
+    
+    if (!worksheet) {
+      throw new Error(`Sheet "${sheetName}" not found in Excel file`);
+    }
+
+    const records = XLSX.utils.sheet_to_json(worksheet, {
+      defval: null,
+      raw: false
+    }) as any[];
     
     if (records.length === 0) {
       return [];
@@ -87,7 +110,8 @@ async function executeExcelQuery(
     // Convert Excel data to records format and execute query
     return executeCSVQueryOnRecords(records, query);
   } catch (error) {
-    throw new Error(`Excel query execution failed: ${error instanceof Error ? error.message : String(error)}`);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    throw new Error(`Excel query execution failed: ${errorMessage}`);
   }
 }
 
@@ -99,6 +123,11 @@ async function executeTextQuery(
   query: string
 ): Promise<any[]> {
   try {
+    // Check if file exists
+    if (!existsSync(filePath)) {
+      throw new Error(`Text file not found: ${filePath}`);
+    }
+
     // Read text file
     const content = await fs.readFile(filePath, 'utf-8');
     const lines = content.split('\n').filter(line => line.trim());

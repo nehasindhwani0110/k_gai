@@ -40,9 +40,10 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
     setLoading(true);
     try {
       setLastRefresh(new Date());
-      // Validate metadata for CSV files
-      if (metadata?.source_type === 'CSV_FILE' && !metadata?.file_path) {
-        throw new Error('File path is missing. Please re-upload your CSV file.');
+      // Validate metadata for file-based sources
+      const fileBasedSources = ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'];
+      if (metadata?.source_type && fileBasedSources.includes(metadata.source_type) && !metadata?.file_path) {
+        throw new Error(`File path is missing. Please re-upload your ${metadata.source_type.replace('_FILE', '')} file.`);
       }
       
       // Get connection string for SQL databases (from metadata or sessionStorage)
@@ -113,12 +114,34 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
       };
 
       // ALWAYS include file_path if it exists in metadata (regardless of source_type)
-      // This ensures CSV files work even if source_type is incorrectly set
+      // This ensures file-based sources work correctly
       if (metadata?.file_path) {
         requestBody.file_path = metadata.file_path;
-        // Also set source_type to CSV_FILE if file_path exists
-        requestBody.source_type = 'CSV_FILE';
-      } else if (metadata?.source_type === 'CSV_FILE') {
+        // Use the actual source_type from metadata, or detect from file extension
+        if (metadata?.source_type && ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'].includes(metadata.source_type)) {
+          requestBody.source_type = metadata.source_type;
+        } else {
+          // Fallback: detect from file extension
+          const ext = metadata.file_path.toLowerCase().split('.').pop();
+          if (ext === 'xlsx' || ext === 'xls') {
+            requestBody.source_type = 'EXCEL_FILE';
+            requestBody.file_type = 'EXCEL';
+          } else if (ext === 'json') {
+            requestBody.source_type = 'JSON_FILE';
+            requestBody.file_type = 'JSON';
+          } else if (ext === 'txt') {
+            requestBody.source_type = 'TXT_FILE';
+            requestBody.file_type = 'TXT';
+          } else {
+            requestBody.source_type = 'CSV_FILE';
+            requestBody.file_type = 'CSV';
+          }
+        }
+        // Include file_type if available in metadata
+        if (metadata?.file_type) {
+          requestBody.file_type = metadata.file_type;
+        }
+      } else if (metadata?.source_type && ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'].includes(metadata.source_type)) {
         // CSV source type but no file_path - error
         console.error(`Missing file_path for CSV_FILE source type in metric: ${metric.metric_name}`);
         setMetricResults((prev) => ({
@@ -128,8 +151,50 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
         }));
         return { hasData: false, hasError: true };
       } else {
-        // For SQL databases, include connection_string if available
-        requestBody.connection_string = process.env.NEXT_PUBLIC_DB_CONNECTION_STRING || metadata?.connection_string;
+        // For SQL databases, get connection_string from multiple sources
+        let connectionString = metadata?.connection_string;
+        
+        // If not in metadata, try to fetch from data source API
+        if (!connectionString && typeof window !== 'undefined') {
+          const dataSourceId = sessionStorage.getItem('dataSourceId');
+          if (dataSourceId) {
+            try {
+              // Fetch source metadata which includes connection_string
+              const sourceResponse = await fetch(`/api/analytics/data-sources/${dataSourceId}/schema?type=source`);
+              if (sourceResponse.ok) {
+                const sourceMetadata = await sourceResponse.json();
+                connectionString = sourceMetadata.connection_string;
+                // Update metadata with connection_string for future use
+                if (connectionString && metadata) {
+                  metadata.connection_string = connectionString;
+                }
+              }
+            } catch (error) {
+              console.warn('Failed to fetch connection_string from data source:', error);
+            }
+          }
+        }
+        
+        // Fallback to sessionStorage or env variable
+        if (!connectionString && typeof window !== 'undefined') {
+          connectionString = sessionStorage.getItem('connectionString') || undefined;
+        }
+        
+        if (!connectionString) {
+          connectionString = process.env.NEXT_PUBLIC_DB_CONNECTION_STRING || undefined;
+        }
+        
+        if (connectionString) {
+          requestBody.connection_string = connectionString;
+        } else {
+          console.error(`Missing connection_string for SQL_DB source type in metric: ${metric.metric_name}`);
+          setMetricResults((prev) => ({
+            ...prev,
+            [metric.metric_name]: [],
+            [`${metric.metric_name}_error`]: 'Missing connection string. Please reconfigure your data source.',
+          }));
+          return { hasData: false, hasError: true };
+        }
       }
 
       const response = await fetch('/api/analytics/execute', {
