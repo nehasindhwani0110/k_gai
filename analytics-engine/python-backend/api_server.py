@@ -10,6 +10,14 @@ from query_executor import execute_sql_query
 import os
 import sys
 
+# Check LangSmith configuration
+langsmith_enabled = os.getenv("LANGCHAIN_TRACING_V2", "false") == "true"
+if langsmith_enabled:
+    print("[PYTHON API] LangSmith tracing enabled - all LLM calls will be traced")
+    print(f"[PYTHON API] Project: {os.getenv('LANGCHAIN_PROJECT', 'analytics-engine')}")
+else:
+    print("[PYTHON API] LangSmith tracing disabled - set LANGCHAIN_TRACING_V2=true and LANGCHAIN_API_KEY to enable")
+
 # Try to import agent service (optional - will fail gracefully if dependencies not installed)
 try:
     from agent_service import get_agent_service

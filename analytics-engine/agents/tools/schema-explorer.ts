@@ -7,10 +7,10 @@
 
 import { DataSourceMetadata } from '../../types';
 import OpenAI from 'openai';
+import { createTracedOpenAI } from '../../utils/langsmith-tracer';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Initialize traced OpenAI client
+const openai = createTracedOpenAI();
 
 /**
  * Identifies relevant tables for a given question

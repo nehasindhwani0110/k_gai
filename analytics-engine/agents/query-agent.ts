@@ -11,6 +11,7 @@ import { exploreRelevantSchema } from '../services/agent-service';
 import { validateAndRefineQuery } from '../services/agent-service';
 import { validateQuery as validateQueryTool } from './tools/query-validator';
 import { validateSQLQuery } from '../services/query-executor';
+import { getLangSmithStatus } from '../utils/langsmith-tracer';
 
 interface AgentState {
   question: string;
@@ -30,10 +31,17 @@ export class QueryAgent {
   private llm: ChatOpenAI;
 
   constructor() {
+    // LangChain automatically traces if LANGCHAIN_TRACING_V2=true and LANGCHAIN_API_KEY are set
+    const langSmithStatus = getLangSmithStatus();
+    if (langSmithStatus.enabled) {
+      console.log('[QueryAgent] LangSmith tracing enabled - LangChain calls will be traced');
+    }
+    
     this.llm = new ChatOpenAI({
       modelName: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
       temperature: 0.2,
       openAIApiKey: process.env.OPENAI_API_KEY,
+      // LangChain automatically uses LangSmith if env vars are set
     });
   }
 
@@ -48,16 +56,26 @@ export class QueryAgent {
 
 Question: ${state.question}
 
-Return JSON:
+Return ONLY valid JSON (no markdown, no code blocks):
 {
   "complexity": "simple" | "complex",
   "needs_schema_exploration": true/false,
-  "query_type": "aggregate" | "filter" | "join" | "group_by"
+  "query_type": "aggregate" | "filter" | "join" | "group_by" | "comparison"
 }`;
 
     try {
       const response = await this.llm.invoke(analysisPrompt);
-      const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+      let content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+      
+      // Clean up markdown code blocks if present
+      content = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+      
+      // Try to extract JSON if wrapped in text
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        content = jsonMatch[0];
+      }
+      
       const analysis = JSON.parse(content);
       
       return {
@@ -66,6 +84,7 @@ Return JSON:
       };
     } catch (error) {
       console.error('[AGENT] Question analysis error:', error);
+      // Continue without analysis - not critical
       return { step: state.step + 1 };
     }
   }
@@ -117,15 +136,67 @@ Requirements:
 4. Include appropriate WHERE, GROUP BY, ORDER BY, LIMIT clauses as needed
 5. CRITICAL - MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If a column is needed but cannot be grouped, wrap it in MIN() or MAX() aggregate function.
 
+CRITICAL - Question Intent Analysis:
+- If question mentions "differences", "difference", "compare", "comparison", "versus", "vs", "measure differences":
+  → Group by ALL dimensions mentioned in the question
+  → Calculate metrics (COUNT, AVG, SUM) for each combination
+  → Example: "differences between X and Y by Z" → GROUP BY Z, X_or_Y_column
+  → Example: "income bracket differences between parties" → GROUP BY income_bracket, party_affiliation
+- This enables visual comparison in charts by showing metrics for each combination
+
 Return ONLY the SQL query, no explanations:`;
 
       const response = await this.llm.invoke(prompt);
-      const query = typeof response.content === 'string' 
+      let query = typeof response.content === 'string' 
         ? response.content.trim() 
         : JSON.stringify(response.content).trim();
       
       // Clean up query (remove markdown code blocks if present)
-      const cleanQuery = query.replace(/^```sql\s*/i, '').replace(/```\s*$/, '').trim();
+      let cleanQuery = query.replace(/^```sql\s*/i, '').replace(/```\s*$/, '').trim();
+      
+      // Post-generation check: Verify query uses columns from question
+      const queryLower = cleanQuery.toLowerCase();
+      const questionLower = state.question.toLowerCase();
+      const missingColumns: string[] = [];
+      
+      columnMapping.forEach(mapping => {
+        const termMentions = (questionLower.match(new RegExp(mapping.questionTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')) || []).length;
+        if (termMentions > 0 && !queryLower.includes(mapping.columnName.toLowerCase())) {
+          missingColumns.push(`${mapping.questionTerm} → ${mapping.columnName}`);
+        }
+      });
+      
+      // If critical columns are missing, refine the query
+      if (missingColumns.length > 0 && columnMapping.length > 0) {
+        console.log('[AGENT] Query missing columns, refining...', missingColumns);
+        
+        const refinePrompt = `Refine this SQL query to use the correct columns from the question.
+
+Question: "${state.question}"
+Current Query: ${cleanQuery}
+
+Missing Columns:
+${missingColumns.map(m => `- ${m}`).join('\n')}
+
+Column Mapping:
+${columnMapping.map(m => `- "${m.questionTerm}" → Use column: "${m.columnName}"`).join('\n')}
+
+Schema:
+${JSON.stringify(state.metadata, null, 2)}
+
+Return ONLY the corrected SQL query (no explanations, no markdown):`;
+
+        try {
+          const refineResponse = await this.llm.invoke(refinePrompt);
+          const refinedQuery = typeof refineResponse.content === 'string' 
+            ? refineResponse.content.trim() 
+            : JSON.stringify(refineResponse.content).trim();
+          cleanQuery = refinedQuery.replace(/^```sql\s*/i, '').replace(/```\s*$/, '').trim();
+          console.log('[AGENT] Query refined');
+        } catch (error) {
+          console.warn('[AGENT] Query refinement failed:', error);
+        }
+      }
       
       return {
         query: cleanQuery,

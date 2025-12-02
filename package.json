@@ -19,9 +19,16 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@langchain/community": "^0.0.20",
+    "@langchain/core": "^0.1.0",
+    "@langchain/langgraph": "^0.0.20",
+    "@langchain/openai": "^0.0.14",
     "@prisma/client": "^5.7.0",
     "axios": "^1.6.2",
+    "bcryptjs": "^2.4.3",
     "csv-parse": "^5.5.3",
+    "langchain": "^0.1.0",
+    "langsmith": "^0.3.82",
     "next": "^14.0.0",
     "openai": "^4.20.0",
     "papaparse": "^5.5.3",
@@ -31,15 +38,10 @@
     "react-hot-toast": "^2.4.1",
     "recharts": "^2.10.3",
     "xlsx": "^0.18.5",
-    "zod": "^3.22.4",
-    "bcryptjs": "^2.4.3",
-    "@langchain/langgraph": "^0.0.20",
-    "@langchain/core": "^0.1.0",
-    "@langchain/openai": "^0.0.14",
-    "langchain": "^0.1.0",
-    "@langchain/community": "^0.0.20"
+    "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20.10.0",
     "@types/papaparse": "^5.5.0",
     "@types/react": "^18.2.42",
@@ -49,8 +51,7 @@
     "eslint-config-next": "^14.0.0",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.3.6",
-    "typescript": "^5.3.2",
-    "@types/bcryptjs": "^2.4.6",
-    "tsx": "^4.7.0"
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.2"
   }
 }

@@ -2,10 +2,10 @@ import { QueryType, SourceType } from '../types';
 import { executeCSVQuery } from './csv-query-executor';
 import { translateCanonicalQuery } from './canonical-mapping-service';
 import OpenAI from 'openai';
+import { createTracedOpenAI } from '../utils/langsmith-tracer';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || '',
-});
+// Initialize traced OpenAI client
+const openai = createTracedOpenAI();
 
 /**
  * Fixes column errors using LLM with full schema introspection

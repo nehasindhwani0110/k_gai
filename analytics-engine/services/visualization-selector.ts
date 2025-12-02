@@ -101,9 +101,9 @@ export function autoSelectVisualizationType(
     if (isDistribution || isComparison) {
       // Pie chart for small distributions (2-8 categories) that sum to 100
       if (isPercentage && rowCount >= 2 && rowCount <= 8) {
-        return 'pie_chart';
-      }
-      
+      return 'pie_chart';
+    }
+    
       // Bar chart for distributions (more readable, especially for many categories)
       if (rowCount >= 2 && rowCount <= 30) {
         return 'bar_chart';
@@ -140,7 +140,7 @@ export function autoSelectVisualizationType(
   if (rowCount >= 2 && rowCount <= 30 && numericKeys.length >= 1 && stringKeys.length >= 1 && !hasGroupBy) {
     // If it's a distribution/comparison question, use bar chart
     if (isDistribution || isComparison) {
-      return 'bar_chart';
+    return 'bar_chart';
     }
     // Otherwise table might be better
     return 'table';

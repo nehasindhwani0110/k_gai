@@ -5,10 +5,15 @@ import {
   AdhocQueryResponse, 
   DashboardMetricsResponse 
 } from '../types';
+import { createTracedOpenAI, traceFunction, logLangSmithStatus } from '../utils/langsmith-tracer';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || '',
-});
+// Initialize traced OpenAI client
+const openai = createTracedOpenAI();
+
+// Log LangSmith status on module load
+if (typeof window === 'undefined') {
+  logLangSmithStatus();
+}
 
 const MASTER_PROMPT_TEMPLATE = `1. ⚙️ System Role and Constraints (The Fixed Instructions)
 
@@ -85,6 +90,11 @@ When the user question mentions time-related terms (month, year, day, date, peri
 1. **UNDERSTAND THE QUESTION COMPLETELY**:
    - Read the user question carefully and understand what they want
    - Identify key elements: what data, which columns, any filters, any grouping, any sorting, any limits
+   - **CRITICAL**: Pay attention to question intent:
+     * "differences" or "difference" → Calculate metrics for each group and show comparison
+     * "compare" or "comparison" → Group by categories and show side-by-side metrics
+     * "versus" or "vs" → Compare two groups/categories
+     * "measure differences" → Calculate metrics for each group to enable comparison
    - Generate SQL that directly answers the question
 
 2. **USE EXACT COLUMN AND TABLE NAMES FROM METADATA**:
@@ -138,6 +148,23 @@ When the user question mentions time-related terms (month, year, day, date, peri
    - User: "compare CGPA by academic stream"
      → Query: "SELECT academic_stream, AVG(cgpa) as avg_cgpa FROM table_name GROUP BY academic_stream ORDER BY avg_cgpa DESC"
    
+   **Difference/Comparison Queries (CRITICAL):**
+   - User: "Measure income-bracket differences between Republican and Democrat respondents"
+     → Query: "SELECT income_bracket, party_affiliation, COUNT(*) as count, AVG(age) as avg_age FROM table_name WHERE party_affiliation IN ('Republican', 'Democrat') GROUP BY income_bracket, party_affiliation ORDER BY income_bracket, party_affiliation"
+     → This groups by both dimensions to show metrics for each combination, enabling comparison
+   
+   - User: "differences between groups" or "compare X by Y"
+     → Query: "SELECT category_column, comparison_column, COUNT(*) as count, AVG(metric_column) as avg_metric FROM table_name GROUP BY category_column, comparison_column ORDER BY category_column, comparison_column"
+     → Always include both grouping dimensions to show side-by-side comparison
+   
+   - User: "what are the differences in X between Y and Z"
+     → Query: "SELECT comparison_column, AVG(metric_column) as avg_metric, COUNT(*) as count FROM table_name WHERE comparison_column IN ('Y', 'Z') GROUP BY comparison_column"
+     → Filter to specific groups being compared
+   
+   - User: "measure differences" or "show differences"
+     → Query: Group by all relevant dimensions and calculate metrics for each combination
+     → Example: "SELECT dimension1, dimension2, COUNT(*) as count, AVG(metric) as avg_metric FROM table_name GROUP BY dimension1, dimension2"
+   
    **Date/Time Queries (CRITICAL):**
    - User: "distribution over month" or "over period of month"
      → Query: **ALWAYS USE**: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table_name GROUP BY DATE(date_column) ORDER BY date"
@@ -188,6 +215,16 @@ When the user question mentions time-related terms (month, year, day, date, peri
    - For "least", "lowest", "minimum" → Use ORDER BY ASC LIMIT 1
    - For "most", "highest", "maximum" → Use ORDER BY DESC LIMIT 1
    - For "top N" or "bottom N" → Use ORDER BY with LIMIT N
+   - **CRITICAL FOR DIFFERENCE/COMPARISON QUERIES**:
+     * When user asks about "differences", "compare", "versus", "vs", "measure differences":
+       → Group by ALL relevant dimensions mentioned in the question
+       → Calculate metrics (COUNT, AVG, SUM, etc.) for each combination
+       → This enables visual comparison in charts
+     * Example: "differences between X and Y by Z"
+       → Query: "SELECT Z, X_or_Y_column, COUNT(*) as count, AVG(metric) as avg_metric FROM table WHERE X_or_Y_column IN ('X', 'Y') GROUP BY Z, X_or_Y_column"
+     * If question mentions multiple dimensions (e.g., "income bracket differences between parties"):
+       → Group by BOTH dimensions: GROUP BY income_bracket, party_affiliation
+       → This shows metrics for each combination, enabling comparison
    - **CRITICAL FOR DATE/TIME QUERIES**: When user asks about "over time", "by month", "by year", "trends", "period", etc.:
      * Check metadata for DATE or DATETIME columns
      * Use date extraction functions: YEAR(column), MONTH(column), DATE(column), DAY(column)
@@ -462,7 +499,7 @@ export async function generateAdhocQuery(
     messages: [
       {
         role: 'system',
-        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. Use any SQL features needed (WHERE, GROUP BY, ORDER BY, LIMIT, aggregates, aliases). CRITICAL RULES: 1) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR(), MONTH() - this ensures charts show multiple data points. 2) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function. Always return valid JSON only.',
+        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. Use any SQL features needed (WHERE, GROUP BY, ORDER BY, LIMIT, aggregates, aliases). CRITICAL RULES: 1) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR(), MONTH() - this ensures charts show multiple data points. 2) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function. 3) For "differences", "compare", "versus", "vs", "measure differences" questions: Group by ALL dimensions mentioned (e.g., "income bracket differences between parties" → GROUP BY income_bracket, party_affiliation) to enable comparison. Always return valid JSON only.',
       },
       {
         role: 'user',

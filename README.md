@@ -1,496 +1,749 @@
-# Multi-Tenant Analytics Engine for Education Systems
-
-A comprehensive analytics engine that converts natural language queries into SQL/query logic, generates insights, and provides data visualizations for education systems.
-
----
+# K-GAI Analytics Engine - Complete System Flow & Documentation
 
 ## 📋 Table of Contents
 
-1. [What This Project Does](#what-this-project-does)
-2. [Prerequisites Checklist](#prerequisites-checklist)
-3. [Step-by-Step Installation](#step-by-step-installation)
-4. [Environment Setup](#environment-setup)
-5. [Running the Application](#running-the-application)
-6. [Using the Application](#using-the-application)
-7. [Troubleshooting](#troubleshooting)
-8. [Project Structure](#project-structure)
+1. [Overview](#overview)
+2. [Technology Stack](#technology-stack)
+3. [Architecture](#architecture)
+4. [Complete System Flow](#complete-system-flow)
+5. [Key Components](#key-components)
+6. [API Endpoints](#api-endpoints)
+7. [File Structure](#file-structure)
+8. [Setup & Installation](#setup--installation)
 
 ---
 
-## 🎯 What This Project Does
+## 🎯 Overview
 
-This analytics engine allows you to:
-- **Ask questions in plain English** and get SQL queries automatically generated
-- **View dashboard metrics** with 6 automatically generated key insights
-- **Visualize data** using bar charts, line charts, pie charts, tables, scatter plots, gauges, and maps
-- **Connect to multiple data sources**: SQL databases, canonical schemas, or CSV files
+**K-GAI Analytics Engine** is a multi-tenant, AI-powered analytics platform that converts natural language questions into SQL queries and generates beautiful visualizations. It supports both SQL databases and CSV files, with intelligent schema detection, query generation, and automatic visualization selection.
 
----
+### Key Features
 
-## ✅ Prerequisites Checklist
-
-Before you start, make sure you have these installed:
-
-### 1. Node.js (Version 18 or higher)
-
-**Check if you have Node.js:**
-```powershell
-node --version
-```
-
-**If you don't have Node.js:**
-- Download from: https://nodejs.org/
-- Choose the LTS (Long Term Support) version
-- Install it (default settings are fine)
-- **Restart your terminal/PowerShell** after installation
-
-**Verify installation:**
-```powershell
-node --version
-npm --version
-```
-You should see version numbers like `v18.17.0` and `9.6.7`
-
-### 2. Python (Version 3.9 or higher)
-
-**Check if you have Python:**
-```powershell
-python --version
-```
-
-**If you don't have Python:**
-- Download from: https://www.python.org/downloads/
-- **IMPORTANT**: During installation, check "Add Python to PATH"
-- Install it
-- **Restart your terminal/PowerShell** after installation
-
-**Verify installation:**
-```powershell
-python --version
-pip --version
-```
-You should see version numbers like `Python 3.11.5` and `pip 23.2.1`
-
-### 3. OpenAI API Key
-
-**Get your API key:**
-1. Go to: https://platform.openai.com/
-2. Sign up or log in
-3. Navigate to: https://platform.openai.com/api-keys
-4. Click "Create new secret key"
-5. Copy the key (it looks like: `sk-...`)
-6. **Save it somewhere safe** - you'll need it in the next step
-
-**Note**: You'll need a paid OpenAI account with credits. Free tier won't work.
-
-### 4. Git (Optional but Recommended)
-
-**Check if you have Git:**
-```powershell
-git --version
-```
-
-**If you don't have Git:**
-- Download from: https://git-scm.com/download/win
-- Install with default settings
-- **Restart your terminal/PowerShell** after installation
+- 🔐 **Multi-tenant authentication** (School-based login)
+- 🤖 **AI-powered query generation** (OpenAI GPT-4)
+- 📊 **Automatic visualization** (Bar, Line, Pie, Scatter, Gauge, Table)
+- 🔍 **Schema introspection** (Automatic table/column detection)
+- 📁 **CSV file support** (Upload and query CSV files)
+- 🗄️ **SQL database support** (MySQL, PostgreSQL, SQLite)
+- 🔄 **Agent-based query generation** (LangChain/LangGraph)
+- 📈 **Dashboard metrics** (Auto-generated analytics)
+- 🔧 **Query auto-fixing** (Handles GROUP BY errors, column errors)
+- 📝 **Query history** (Track all queries)
+- 🎨 **PowerBI-style visualizations**
 
 ---
 
-## 🚀 Step-by-Step Installation
+## 🛠️ Technology Stack
 
-### Step 1: Open PowerShell in Your Project Folder
+### Frontend
+- **Framework**: Next.js 14 (React 18)
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS
+- **Charts**: Recharts
+- **State Management**: React Hooks
+- **Notifications**: react-hot-toast
+- **File Parsing**: papaparse, xlsx, csv-parse
 
-1. Navigate to your project folder: `C:\Users\HP\OneDrive\Desktop\k_gai`
-2. Right-click in the folder
-3. Select "Open in Terminal" or "Open PowerShell window here"
-4. Or open PowerShell and run:
-   ```powershell
-   cd "C:\Users\HP\OneDrive\Desktop\k_gai"
-   ```
+### Backend (TypeScript/Node.js)
+- **Runtime**: Node.js
+- **Framework**: Next.js API Routes
+- **Database ORM**: Prisma
+- **Database**: SQLite (for metadata), MySQL/PostgreSQL (for data sources)
+- **Authentication**: bcryptjs (password hashing)
+- **HTTP Client**: axios
 
-### Step 2: Install Node.js Dependencies
+### AI/ML Stack
+- **LLM Provider**: OpenAI (GPT-4 Turbo)
+- **Agent Framework**: LangChain, LangGraph
+- **Observability**: LangSmith (tracing, token usage, latency)
+- **Packages**:
+  - `openai` - OpenAI SDK
+  - `@langchain/openai` - LangChain OpenAI integration
+  - `@langchain/core` - Core LangChain functionality
+  - `@langchain/langgraph` - LangGraph for agent workflows
+  - `langsmith` - LangSmith tracing
 
-**Run this command:**
-```powershell
-npm install
-```
+### Backend (Python)
+- **Framework**: Flask
+- **Database**: SQLAlchemy
+- **Agent Framework**: LangChain (Python)
+- **Purpose**: Schema introspection, SQL agent execution
 
-**What this does:**
-- Downloads all required Node.js packages (Next.js, React, etc.)
-- Creates a `node_modules` folder
-- Takes 2-5 minutes depending on your internet speed
-
-**Expected output:**
-```
-added 500+ packages, and audited 500+ packages in 2m
-```
-
-**If you see errors:**
-- Make sure you're in the correct folder (should contain `package.json`)
-- Check your internet connection
-- Try: `npm cache clean --force` then `npm install` again
-
-### Step 3: Install Python Dependencies
-
-**Navigate to Python backend folder:**
-```powershell
-cd analytics-engine\python-backend
-```
-
-**Install Python packages:**
-```powershell
-pip install -r requirements.txt
-```
-
-**What this does:**
-- Installs SQLAlchemy, Pandas, DuckDB, and database drivers
-- Takes 1-3 minutes
-
-**Expected output:**
-```
-Successfully installed sqlalchemy-2.0.23 pandas-2.1.4 duckdb-0.9.2 ...
-```
-
-**If you see errors:**
-- Make sure Python is installed correctly
-- Try: `python -m pip install -r requirements.txt`
-- On Windows, you might need: `py -m pip install -r requirements.txt`
-
-**Go back to project root:**
-```powershell
-cd ..\..
-```
-
-### Step 4: Create Environment Variables File
-
-**Create the `.env.local` file:**
-
-1. In your project folder (`k_gai`), create a new file named `.env.local`
-2. **Important**: The file name starts with a dot (`.env.local`)
-3. Open it in a text editor (Notepad, VS Code, etc.)
-
-**Copy and paste this template:**
-```env
-# OpenAI API Configuration (REQUIRED)
-OPENAI_API_KEY=sk-your-actual-api-key-here
-OPENAI_MODEL=gpt-4-turbo-preview
-
-# Database Connection (OPTIONAL - only if using SQL database)
-# Uncomment and fill in if you have a database:
-# NEXT_PUBLIC_DB_CONNECTION_STRING=postgresql://user:password@localhost:5432/dbname
-
-# For MySQL, use:
-# NEXT_PUBLIC_DB_CONNECTION_STRING=mysql://user:password@localhost:3306/dbname
-
-# For SQLite, use:
-# NEXT_PUBLIC_DB_CONNECTION_STRING=sqlite:///path/to/database.db
-```
-
-**Replace `sk-your-actual-api-key-here` with your actual OpenAI API key**
-
-**Save the file** (Ctrl+S)
-
-**Verify the file exists:**
-```powershell
-dir .env.local
-```
-
-You should see the file listed.
+### Development Tools
+- **TypeScript**: Type checking
+- **ESLint**: Code linting
+- **PostCSS**: CSS processing
+- **tsx**: TypeScript execution
 
 ---
 
-## ⚙️ Environment Setup
+## 🏗️ Architecture
 
-### Understanding the Environment Variables
+### High-Level Architecture
 
-**Required Variables:**
-
-1. **`OPENAI_API_KEY`**
-   - Your OpenAI API key (starts with `sk-`)
-   - **Required** for the LLM to generate SQL queries
-   - Get it from: https://platform.openai.com/api-keys
-
-2. **`OPENAI_MODEL`**
-   - Which OpenAI model to use
-   - Default: `gpt-4-turbo-preview`
-   - You can also use: `gpt-3.5-turbo` (cheaper but less accurate)
-
-**Optional Variables:**
-
-3. **`NEXT_PUBLIC_DB_CONNECTION_STRING`**
-   - Only needed if you're connecting to a real SQL database
-   - Format: `postgresql://username:password@host:port/database`
-   - If you're just testing with CSV files, you can skip this
-
-### Example `.env.local` File
-
-**For testing without a database:**
-```env
-OPENAI_API_KEY=sk-proj-abc123xyz789...
-OPENAI_MODEL=gpt-4-turbo-preview
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Frontend (Next.js)                    │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │   Login      │  │  Analytics   │  │  Dashboard   │      │
+│  │   Page       │  │    Page      │  │   Metrics    │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Next.js API Routes                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │  /api/auth   │  │ /api/analytics│  │ /api/execute │      │
+│  │   /login     │  │               │  │              │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+└─────────────────────────────────────────────────────────────┘
+                            │
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+        ▼                   ▼                   ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│   LLM        │  │   Query      │  │   Python     │
+│   Service    │  │   Executor   │  │   Backend    │
+│              │  │              │  │   (Flask)    │
+└──────────────┘  └──────────────┘  └──────────────┘
+        │                   │                   │
+        ▼                   ▼                   ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│   OpenAI     │  │   Database   │  │  LangChain   │
+│   API        │  │   (SQL)      │  │   Agent      │
+└──────────────┘  └──────────────┘  └──────────────┘
 ```
 
-**For production with PostgreSQL:**
-```env
-OPENAI_API_KEY=sk-proj-abc123xyz789...
-OPENAI_MODEL=gpt-4-turbo-preview
-NEXT_PUBLIC_DB_CONNECTION_STRING=postgresql://admin:mypassword@localhost:5432/schooldb
+### Component Architecture
+
+```
+Frontend Components
+├── SchoolLogin.tsx          → Authentication UI
+├── FileUpload.tsx           → CSV upload interface
+├── AdhocQuery.tsx           → Natural language query input
+├── DashboardMetrics.tsx     → Auto-generated metrics display
+├── AIAnalyticsSuggestions.tsx → AI-powered question suggestions
+├── QueryHistory.tsx         → Query history display
+└── VisualizationRenderer.tsx → Chart rendering
+    ├── BarChart.tsx
+    ├── LineChart.tsx
+    ├── PieChart.tsx
+    ├── ScatterPlot.tsx
+    ├── Gauge.tsx
+    └── Table.tsx
+
+Backend Services
+├── llm-service.ts           → OpenAI query generation
+├── query-executor.ts        → SQL execution & error fixing
+├── schema-introspection.ts  → Database schema detection
+├── visualization-selector.ts → Auto chart type selection
+├── agent-service.ts         → LangChain agent integration
+└── langsmith-tracer.ts     → LangSmith observability
+
+Python Backend
+├── api_server.py            → Flask REST API
+├── schema_introspection.py  → SQLAlchemy schema detection
+├── query_executor.py        → SQL query execution
+└── agent_service.py         → LangChain SQL agent
 ```
 
 ---
 
-## 🏃 Running the Application
+## 🔄 Complete System Flow
 
-### Step 1: Start the Development Server
-
-**Make sure you're in the project root folder:**
-```powershell
-cd "C:\Users\HP\OneDrive\Desktop\k_gai"
-```
-
-**Start the server:**
-```powershell
-npm run dev
-```
-
-**What happens:**
-- Next.js compiles your application
-- Starts a local development server
-- You'll see output like:
+### Flow 1: User Login & Initial Setup
 
 ```
-  ▲ Next.js 14.0.0
-  - Local:        http://localhost:3000
-  - Ready in 2.3s
+1. User visits http://localhost:3000
+   │
+   ├─► app/page.tsx (Home page)
+   │   └─► Checks sessionStorage for authentication
+   │       ├─► If authenticated → Redirect to /analytics
+   │       └─► If not → Show SchoolLogin component
+   │
+   ├─► User enters credentials (email, password)
+   │
+   ├─► POST /api/auth/login
+   │   ├─► Validates credentials against Prisma DB
+   │   ├─► Checks School table (email, password hash)
+   │   ├─► Creates DataSource if doesn't exist
+   │   ├─► Links School to DataSource
+   │   └─► Returns: { schoolId, dataSourceId, schoolName }
+   │
+   └─► Frontend stores in sessionStorage
+       └─► Redirects to /analytics page
 ```
 
-**Keep this terminal window open!** The server needs to keep running.
+### Flow 2: Schema Detection (First Time Access)
 
-### Step 2: Open the Application
+```
+1. User lands on /analytics page
+   │
+   ├─► app/analytics/page.tsx
+   │   └─► Checks if metadata exists in DataSource
+   │
+   ├─► If no metadata:
+   │   │
+   │   ├─► GET /api/analytics/data-sources/[id]/schema
+   │   │   ├─► Checks source_type (SQL_DB or CSV_FILE)
+   │   │   │
+   │   │   ├─► If SQL_DB:
+   │   │   │   ├─► Calls Python backend: POST http://localhost:8000/introspect
+   │   │   │   │   ├─► schema_introspection.py
+   │   │   │   │   │   ├─► SQLAlchemy connects to database
+   │   │   │   │   │   ├─► Inspects all tables
+   │   │   │   │   │   ├─► Gets columns, types, constraints
+   │   │   │   │   │   └─► Returns: { tables: [{ name, columns: [...] }] }
+   │   │   │   │   │
+   │   │   │   │   └─► Saves metadata to Prisma DataSource
+   │   │   │   │
+   │   │   └─► If CSV_FILE:
+   │   │       ├─► Reads CSV file from uploads/
+   │   │       ├─► Parses headers and sample rows
+   │   │       ├─► Detects data types (string, number, date)
+   │   │       └─► Saves metadata to Prisma DataSource
+   │   │
+   │   └─► Frontend receives metadata
+   │       └─► Displays FileUpload, AdhocQuery, DashboardMetrics components
+```
 
-1. Open your web browser (Chrome, Edge, Firefox, etc.)
-2. Go to: **http://localhost:3000**
-3. You should see the landing page
+### Flow 3: Ad-Hoc Query Generation
 
-### Step 3: Access the Analytics Dashboard
+```
+1. User types natural language question
+   Example: "What is the distribution of payment methods?"
+   │
+   ├─► AdhocQuery.tsx component
+   │   └─► User submits question
+   │
+   ├─► POST /api/analytics
+   │   Body: {
+   │     mode: "ADHOC_QUERY",
+   │     user_question: "What is the distribution...",
+   │     metadata: { tables: [...], columns: [...] },
+   │     connection_string: "mysql://...",
+   │     use_agent: true/false
+   │   }
+   │
+   ├─► Route handler: app/api/analytics/route.ts
+   │   └─► Validates request
+   │
+   ├─► Decision: Which query generation method?
+   │   │
+   │   ├─► Option A: LangGraph Agent (if use_langgraph=true)
+   │   │   └─► generateAdhocQueryWithLangGraphAgent()
+   │   │       ├─► QueryAgent.execute()
+   │   │       │   ├─► Step 1: Analyze question complexity
+   │   │       │   ├─► Step 2: Explore relevant schema (if needed)
+   │   │       │   │   └─► Calls schema-explorer.ts tool
+   │   │       │   │       └─► Identifies relevant tables based on question
+   │   │       │   ├─► Step 3: Generate query using LLM
+   │   │       │   │   └─► ChatOpenAI (LangChain) with metadata
+   │   │       │   ├─► Step 4: Validate query
+   │   │       │   │   └─► query-validator.ts tool
+   │   │       │   └─► Step 5: Refine if needed
+   │   │       └─► Returns: SQL query string
+   │   │
+   │   ├─► Option B: Python Agent (if use_agent=true)
+   │   │   └─► generateQueryWithPythonAgent()
+   │   │       ├─► POST http://localhost:8000/agent/query
+   │   │       │   └─► agent_service.py
+   │   │       │       ├─► Creates LangChain SQL Agent
+   │   │       │       ├─► Agent explores schema dynamically
+   │   │       │       ├─► Generates query using LLM
+   │   │       │       └─► Returns: SQL query string
+   │   │       └─► Returns: SQL query
+   │   │
+   │   └─► Option C: Direct LLM (default)
+   │       └─► generateAdhocQuery()
+   │           ├─► llm-service.ts
+   │           │   ├─► Reduces metadata if large database (>10 tables)
+   │           │   │   └─► Uses LLM to identify relevant tables
+   │           │   ├─► Builds prompt with:
+   │           │   │   ├─► User question
+   │           │   │   ├─► Schema metadata
+   │           │   │   └─► SQL generation rules
+   │           │   ├─► Calls OpenAI API (with LangSmith tracing)
+   │           │   │   └─► openai.chat.completions.create()
+   │           │   │       ├─► Model: gpt-4-turbo-preview
+   │           │   │       ├─► Response format: JSON
+   │           │   │       └─► Returns: { query_content, visualization_type, insight_summary }
+   │           │   └─► Parses JSON response
+   │           └─► Returns: AdhocQueryResponse
+   │
+   ├─► Response sent to frontend
+   │   └─► { query_content: "SELECT ...", visualization_type: "auto", insight_summary: "..." }
+   │
+   ├─► Frontend executes query
+   │   └─► POST /api/analytics/execute
+   │       ├─► query-executor.ts
+   │       │   ├─► Validates SQL (security check)
+   │       │   ├─► Executes query
+   │       │   │   ├─► If SQL_DB: Calls Python backend
+   │       │   │   │   └─► POST http://localhost:8000/execute
+   │       │   │   │       └─► query_executor.py executes SQL
+   │       │   │   └─► If CSV_FILE: Uses csv-query-executor.ts
+   │       │   │       └─► Parses CSV and executes query logic
+   │       │   │
+   │       │   ├─► If error occurs:
+   │       │   │   ├─► GROUP BY error? → fixGroupByWithLLM()
+   │       │   │   │   └─► Uses LLM to fix GROUP BY violations
+   │       │   │   └─► Column error? → fixColumnErrorWithLLM()
+   │       │   │       ├─► Introspects schema for correct columns
+   │       │   │       └─► Uses LLM to fix column names
+   │       │   │
+   │       │   └─► Returns: { results: [...] }
+   │       │
+   │       └─► Frontend receives results
+   │
+   ├─► Visualization Selection
+   │   └─► visualization-selector.ts
+   │       ├─► Analyzes data structure
+   │       ├─► Checks query content
+   │       ├─► Considers user question
+   │       └─► Selects: bar_chart, pie_chart, line_chart, etc.
+   │
+   └─► Render Visualization
+       └─► VisualizationRenderer.tsx
+           ├─► BarChart.tsx (PowerBI-style)
+           ├─► PieChart.tsx
+           ├─► LineChart.tsx
+           └─► etc.
+```
 
-1. Click the button "Go to Analytics Dashboard"
-2. Or go directly to: **http://localhost:3000/analytics**
-3. You should see the analytics interface with two tabs:
-   - **Dashboard Metrics** (default)
-   - **Adhoc Query**
+### Flow 4: Dashboard Metrics Generation
+
+```
+1. User visits /analytics page
+   │
+   ├─► DashboardMetrics.tsx component loads
+   │
+   ├─► POST /api/analytics
+   │   Body: {
+   │     mode: "DASHBOARD_METRICS",
+   │     metadata: { tables: [...], columns: [...] },
+   │     connection_string: "mysql://...",
+   │     use_agent: true/false
+   │   }
+   │
+   ├─► Route handler: app/api/analytics/route.ts
+   │
+   ├─► Decision: Agent-based or direct LLM?
+   │   │
+   │   ├─► If use_agent=true or large database:
+   │   │   └─► generateDashboardMetricsWithAgent()
+   │   │       ├─► Identifies key tables (scoring algorithm)
+   │   │       │   └─► Scores tables based on:
+   │   │       │       ├─► Numeric columns (for aggregations)
+   │   │       │       ├─► Date columns (for time series)
+   │   │       │       └─► Category columns (for distributions)
+   │   │       ├─► Reduces metadata to top 10 tables
+   │   │       └─► Calls generateDashboardMetrics()
+   │   │
+   │   └─► generateDashboardMetrics()
+   │       ├─► llm-service.ts
+   │       │   ├─► Builds prompt requesting 6-8 metrics
+   │       │   ├─► Includes metadata (reduced if agent-based)
+   │       │   ├─► Calls OpenAI API
+   │       │   └─► Returns: { dashboard_metrics: [...] }
+   │       │
+   │       └─► Each metric contains:
+   │           ├─► metric_name: "Total Revenue"
+   │           ├─► query_content: "SELECT SUM(amount)..."
+   │           ├─► visualization_type: "auto"
+   │           └─► insight_summary: "Shows total revenue..."
+   │
+   ├─► Post-processing
+   │   └─► query-post-processor.ts
+   │       └─► Ensures queries return data
+   │
+   ├─► Frontend receives metrics
+   │
+   ├─► For each metric:
+   │   ├─► Execute query (POST /api/analytics/execute)
+   │   ├─► Check if returns data
+   │   ├─► Auto-select visualization type
+   │   └─► Render chart
+   │
+   └─► Display grid of metrics with visualizations
+```
+
+### Flow 5: CSV File Upload & Query
+
+```
+1. User uploads CSV file
+   │
+   ├─► FileUpload.tsx component
+   │   └─► User selects file
+   │
+   ├─► POST /api/analytics/upload
+   │   ├─► Saves file to uploads/ directory
+   │   ├─► Parses CSV headers
+   │   ├─► Detects data types
+   │   ├─► Creates DataSource record in Prisma
+   │   └─► Returns: { dataSourceId, metadata }
+   │
+   ├─► Frontend stores metadata
+   │
+   ├─► User asks question
+   │   └─► Same flow as Ad-Hoc Query (Flow 3)
+   │
+   └─► Query execution
+       └─► csv-query-executor.ts
+           ├─► Reads CSV file
+           ├─► Parses into array of objects
+           ├─► Executes query logic (filtering, grouping, etc.)
+           └─► Returns results
+```
+
+### Flow 6: LangSmith Tracing (Observability)
+
+```
+Every LLM call is automatically traced:
+│
+├─► langsmith-tracer.ts
+│   ├─► Checks: LANGCHAIN_TRACING_V2=true
+│   ├─► Wraps OpenAI client with LangSmith
+│   └─► All calls automatically traced
+│
+├─► LangSmith captures:
+│   ├─► Input: Full prompt/messages
+│   ├─► Output: LLM response
+│   ├─► Tokens: Input/output token count
+│   ├─► Latency: Execution time
+│   ├─► Metadata: Model, temperature, etc.
+│   └─► Errors: Failed calls with context
+│
+└─► View in LangSmith dashboard
+    └─► https://smith.langchain.com
+        └─► Projects → analytics-engine
+```
 
 ---
 
-## 📖 Using the Application
+## 🔧 Key Components
 
-### Dashboard Metrics Tab
+### Frontend Components
 
-**What it does:**
-- Automatically generates 6 key metrics for education analytics
-- Shows visualizations for each metric
+#### `SchoolLogin.tsx`
+- **Purpose**: Authentication UI
+- **Features**: Email/password login, session management
+- **Flow**: Validates → Calls `/api/auth/login` → Stores session → Redirects
 
-**How to use:**
-1. Click on the **"Dashboard Metrics"** tab (should be selected by default)
-2. Wait a few seconds for metrics to load
-3. You'll see 6 cards with different metrics and visualizations
+#### `FileUpload.tsx`
+- **Purpose**: CSV file upload interface
+- **Features**: Drag & drop, file validation, progress tracking
+- **Flow**: Upload → Parse → Save → Create DataSource
 
-**Note**: The first time, it may take 10-30 seconds as it calls the OpenAI API.
+#### `AdhocQuery.tsx`
+- **Purpose**: Natural language query interface
+- **Features**: Question input, query display, visualization, data modal
+- **Flow**: Question → Generate query → Execute → Visualize
 
-### Adhoc Query Tab
+#### `DashboardMetrics.tsx`
+- **Purpose**: Auto-generated dashboard display
+- **Features**: Grid layout, metric cards, individual visualizations
+- **Flow**: Load → Generate metrics → Execute queries → Display charts
 
-**What it does:**
-- Lets you ask questions in plain English
-- Generates SQL queries automatically
-- Shows results as visualizations
+#### `AIAnalyticsSuggestions.tsx`
+- **Purpose**: AI-powered question suggestions
+- **Features**: Generates relevant questions based on schema
+- **Flow**: Analyze schema → Generate suggestions → Display → User clicks
 
-**How to use:**
-1. Click on the **"Adhoc Query"** tab
-2. Type a question in the input box, for example:
-   - "What is the average score for 10th graders in Math?"
-   - "How many students are enrolled in each grade?"
-   - "Show me the top 5 subjects by average score"
-3. Click the **"Ask"** button
-4. Wait a few seconds (it's calling OpenAI API)
-5. You'll see:
-   - The generated SQL query
-   - An insight summary
-   - A visualization (if data is available)
+#### `VisualizationRenderer.tsx`
+- **Purpose**: Chart rendering wrapper
+- **Features**: Routes to appropriate chart component
+- **Components**: BarChart, LineChart, PieChart, ScatterPlot, Gauge, Table
 
-**Example Questions to Try:**
-- "What is the total number of students?"
-- "Show me enrollment by grade level"
-- "What are the average scores by subject?"
+### Backend Services
 
----
+#### `llm-service.ts`
+- **Purpose**: Core LLM query generation
+- **Functions**:
+  - `generateAdhocQuery()` - Direct LLM query generation
+  - `generateDashboardMetrics()` - Dashboard metrics generation
+  - `generateAdhocQueryWithLangGraphAgent()` - Agent-based generation
+  - `reduceMetadataForAdhocQuery()` - Metadata reduction for large DBs
 
-## 🔧 Troubleshooting
+#### `query-executor.ts`
+- **Purpose**: SQL query execution and error handling
+- **Functions**:
+  - `executeSQLQuery()` - Execute query with error handling
+  - `fixGroupByWithLLM()` - Auto-fix GROUP BY violations
+  - `fixColumnErrorWithLLM()` - Auto-fix column name errors
 
-### Problem: "npm: command not found" or "npm is not recognized"
+#### `schema-introspection.ts`
+- **Purpose**: Database schema detection
+- **Functions**:
+  - `introspectSQLSchema()` - Get schema from SQL database
+  - `introspectCSVSchema()` - Get schema from CSV file
 
-**Solution:**
-- Node.js is not installed or not in PATH
-- Reinstall Node.js from https://nodejs.org/
-- **Restart your terminal/PowerShell** after installation
-- Verify with: `node --version` and `npm --version`
+#### `visualization-selector.ts`
+- **Purpose**: Automatic chart type selection
+- **Function**: `autoSelectVisualizationType()` - Analyzes data and query to select best chart
 
-### Problem: "python: command not found" or "pip is not recognized"
+#### `agent-service.ts`
+- **Purpose**: LangChain agent integration
+- **Functions**:
+  - `generateQueryWithSQLAgent()` - LangChain SQL agent
+  - `exploreRelevantSchema()` - Schema exploration tool
 
-**Solution:**
-- Python is not installed or not in PATH
-- Reinstall Python from https://www.python.org/downloads/
-- **IMPORTANT**: Check "Add Python to PATH" during installation
-- **Restart your terminal/PowerShell** after installation
-- Verify with: `python --version` and `pip --version`
+#### `langsmith-tracer.ts`
+- **Purpose**: LangSmith observability
+- **Functions**:
+  - `createTracedOpenAI()` - Wraps OpenAI client with tracing
+  - `traceFunction()` - Trace custom functions
+  - `getLangSmithStatus()` - Get tracing status
 
-### Problem: "Cannot find module 'next'" or similar errors
+### Python Backend
 
-**Solution:**
-- Dependencies are not installed
-- Run: `npm install` in the project root folder
-- Make sure you're in the correct folder (should have `package.json`)
+#### `api_server.py`
+- **Purpose**: Flask REST API server
+- **Endpoints**:
+  - `POST /introspect` - Schema introspection
+  - `POST /execute` - SQL query execution
+  - `POST /agent/query` - LangChain agent query
+  - `POST /agent/explore-schema` - Schema exploration
 
-### Problem: "OPENAI_API_KEY is not set" or API errors
+#### `schema_introspection.py`
+- **Purpose**: SQLAlchemy-based schema detection
+- **Function**: `introspect_sql_schema()` - Inspects database structure
 
-**Solution:**
-1. Check that `.env.local` file exists in the project root
-2. Verify the file name is exactly `.env.local` (starts with a dot)
-3. Make sure your API key is correct (starts with `sk-`)
-4. Check that you have credits in your OpenAI account
-5. **Restart the development server** after changing `.env.local`:
-   - Stop the server (Ctrl+C)
-   - Run `npm run dev` again
-
-### Problem: Port 3000 is already in use
-
-**Solution:**
-- Another application is using port 3000
-- Stop the other application, OR
-- Use a different port:
-  ```powershell
-  $env:PORT=3001; npm run dev
-  ```
-- Then access: http://localhost:3001
-
-### Problem: "Failed to generate query" or "Internal server error"
-
-**Solution:**
-1. Check your OpenAI API key is valid
-2. Check you have credits in your OpenAI account
-3. Check your internet connection
-4. Look at the terminal/console for detailed error messages
-5. Make sure `.env.local` file is in the project root (not in a subfolder)
-
-### Problem: Visualizations not showing
-
-**Solution:**
-- This is normal if you don't have actual data connected
-- The system generates queries but needs real data to visualize
-- For testing, you can use CSV files or connect a test database
-
-### Problem: Python packages installation fails
-
-**Solution:**
-- Try: `python -m pip install --upgrade pip`
-- Then: `python -m pip install -r requirements.txt`
-- On Windows, you might need: `py -m pip install -r requirements.txt`
-- Make sure you're in the `analytics-engine\python-backend` folder
+#### `agent_service.py`
+- **Purpose**: LangChain SQL agent service
+- **Function**: `generate_query()` - Uses LangChain SQL agent
 
 ---
 
-## 📁 Project Structure
+## 🌐 API Endpoints
+
+### Authentication
+- `POST /api/auth/login` - School login
+
+### Analytics
+- `POST /api/analytics` - Generate queries/metrics
+  - Mode: `ADHOC_QUERY` or `DASHBOARD_METRICS`
+- `POST /api/analytics/execute` - Execute SQL query
+- `POST /api/analytics/upload` - Upload CSV file
+- `GET /api/analytics/schema` - Get schema
+- `GET /api/analytics/data-sources/[id]/schema` - Get data source schema
+- `POST /api/analytics/suggestions` - Get AI suggestions
+- `GET /api/analytics/history` - Get query history
+- `POST /api/analytics/history` - Save query to history
+
+### Python Backend (Flask)
+- `GET /health` - Health check
+- `POST /introspect` - Schema introspection
+- `POST /execute` - Execute SQL query
+- `POST /agent/query` - LangChain agent query
+- `POST /agent/explore-schema` - Schema exploration
+
+---
+
+## 📁 File Structure
 
 ```
 k_gai/
+├── app/                          # Next.js app directory
+│   ├── page.tsx                  # Home page (login)
+│   ├── analytics/
+│   │   └── page.tsx              # Analytics dashboard
+│   └── api/                      # API routes
+│       ├── auth/login/route.ts   # Login endpoint
+│       └── analytics/
+│           ├── route.ts           # Main analytics endpoint
+│           ├── execute/route.ts   # Query execution
+│           ├── upload/route.ts    # File upload
+│           └── suggestions/route.ts
+│
+├── components/                   # React components
+│   ├── auth/
+│   │   └── SchoolLogin.tsx
+│   └── analytics/
+│       ├── AdhocQuery.tsx
+│       ├── DashboardMetrics.tsx
+│       ├── FileUpload.tsx
+│       ├── AIAnalyticsSuggestions.tsx
+│       ├── QueryHistory.tsx
+│       ├── VisualizationRenderer.tsx
+│       └── visualizations/
+│           ├── BarChart.tsx
+│           ├── LineChart.tsx
+│           ├── PieChart.tsx
+│           └── ...
+│
 ├── analytics-engine/              # Core analytics engine
-│   ├── types/                     # TypeScript type definitions
-│   │   └── index.ts              # All type definitions
-│   ├── services/                  # Core services
-│   │   ├── llm-service.ts        # OpenAI integration for query generation
-│   │   ├── schema-introspection.ts # Schema validation
-│   │   ├── csv-processor.ts      # CSV file processing
-│   │   └── query-executor.ts     # Query execution
-│   └── python-backend/           # Python services
-│       ├── schema_introspection.py
-│       ├── csv_processor.py
-│       ├── query_executor.py
-│       └── requirements.txt      # Python dependencies
-├── app/                           # Next.js app directory
-│   ├── api/analytics/            # API routes
-│   │   ├── route.ts             # Main analytics API
-│   │   ├── execute/route.ts     # Query execution API
-│   │   └── schema/route.ts     # Schema introspection API
-│   ├── analytics/               # Analytics page
-│   │   └── page.tsx
-│   ├── layout.tsx               # Root layout
-│   ├── page.tsx                 # Home page
-│   └── globals.css              # Global styles
-├── components/analytics/         # React components
-│   ├── AdhocQuery.tsx           # Natural language query interface
-│   ├── DashboardMetrics.tsx     # Dashboard metrics display
-│   ├── VisualizationRenderer.tsx # Routes to correct visualization
-│   └── visualizations/          # Individual chart components
-│       ├── BarChart.tsx
-│       ├── LineChart.tsx
-│       ├── PieChart.tsx
-│       ├── Table.tsx
-│       ├── ScatterPlot.tsx
-│       ├── Gauge.tsx
-│       └── MapView.tsx
-├── .env.local                    # Environment variables (YOU CREATE THIS)
-├── package.json                  # Node.js dependencies
-├── tsconfig.json                 # TypeScript configuration
-├── tailwind.config.js            # Tailwind CSS configuration
-├── next.config.js                # Next.js configuration
+│   ├── services/                 # Business logic
+│   │   ├── llm-service.ts        # LLM query generation
+│   │   ├── query-executor.ts     # Query execution
+│   │   ├── schema-introspection.ts
+│   │   ├── visualization-selector.ts
+│   │   ├── agent-service.ts
+│   │   └── langsmith-tracer.ts
+│   ├── agents/                   # Agent implementations
+│   │   ├── query-agent.ts        # LangGraph agent
+│   │   └── tools/
+│   │       ├── query-validator.ts
+│   │       └── schema-explorer.ts
+│   ├── python-backend/           # Python Flask server
+│   │   ├── api_server.py
+│   │   ├── schema_introspection.py
+│   │   ├── query_executor.py
+│   │   └── agent_service.py
+│   ├── types/
+│   │   └── index.ts              # TypeScript types
+│   └── utils/
+│       ├── date-utils.ts
+│       └── langsmith-tracer.ts
+│
+├── lib/
+│   └── prisma.ts                 # Prisma client
+│
+├── prisma/
+│   ├── schema.prisma             # Database schema
+│   └── seed.ts                   # Seed data
+│
+├── scripts/                      # Utility scripts
+│   ├── create_realestate_tenant.ts
+│   └── test_realestate_tenant.ts
+│
+├── uploads/                      # Uploaded CSV files
+│
+├── package.json                  # Dependencies
+├── tsconfig.json                 # TypeScript config
+├── tailwind.config.js           # Tailwind config
 └── README.md                     # This file
 ```
 
 ---
 
-## 🎓 Quick Start Summary
+## 🚀 Setup & Installation
 
-**Copy-paste these commands in order:**
+### Prerequisites
+- Node.js 18+
+- Python 3.8+
+- MySQL/PostgreSQL (for SQL databases)
+- OpenAI API key
 
-```powershell
-# 1. Navigate to project folder
-cd "C:\Users\HP\OneDrive\Desktop\k_gai"
+### Installation Steps
 
-# 2. Install Node.js dependencies
+1. **Install Node.js dependencies**
+```bash
 npm install
-
-# 3. Install Python dependencies
-cd analytics-engine\python-backend
-pip install -r requirements.txt
-cd ..\..
-
-# 4. Create .env.local file (see Environment Setup section above)
-# Copy the template and add your OpenAI API key
-
-# 5. Start the server
-npm run dev
-
-# 6. Open browser to http://localhost:3000/analytics
 ```
 
+2. **Install Python dependencies**
+```bash
+cd analytics-engine/python-backend
+pip install -r requirements.txt
+```
+
+3. **Setup Prisma database**
+```bash
+npx prisma generate
+npx prisma migrate dev
+npm run prisma:seed
+```
+
+4. **Configure environment variables**
+Create `.env.local`:
+```env
+# OpenAI
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_MODEL=gpt-4-turbo-preview
+
+# Database (for SQL sources)
+DATABASE_URL=mysql://user:password@localhost:3306/dbname
+
+# LangSmith (optional)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your-langsmith-api-key
+LANGCHAIN_PROJECT=analytics-engine
+```
+
+5. **Start Python backend** (in separate terminal)
+```bash
+npm run python:backend
+# Or: cd analytics-engine/python-backend && python api_server.py
+```
+
+6. **Start Next.js dev server**
+```bash
+npm run dev
+```
+
+7. **Access application**
+- Frontend: http://localhost:3000
+- Python API: http://localhost:8000
+
+### Default Login Credentials
+- Email: `schoola@gmail.com`
+- Password: `neha`
+
 ---
 
-## 📞 Need Help?
+## 📊 Data Flow Summary
 
-If you're stuck:
-1. Check the **Troubleshooting** section above
-2. Look at the terminal/console for error messages
-3. Verify all prerequisites are installed correctly
-4. Make sure `.env.local` file exists and has your API key
+1. **User Login** → Authenticate → Create DataSource → Store metadata
+2. **Schema Detection** → Introspect database/CSV → Save schema → Display UI
+3. **Query Generation** → User question → LLM/Agent → SQL query → Execute → Visualize
+4. **Dashboard Metrics** → Generate 6-8 metrics → Execute queries → Display charts
+5. **Observability** → All LLM calls traced → View in LangSmith dashboard
 
 ---
 
-## 🎉 You're All Set!
+## 🔍 Key Technologies Explained
 
-Once everything is running:
-- ✅ Server is running on http://localhost:3000
-- ✅ You can ask questions in the Adhoc Query tab
-- ✅ You can view dashboard metrics
-- ✅ Visualizations will appear automatically
+### Next.js 14
+- **App Router**: File-based routing with `app/` directory
+- **Server Components**: Server-side rendering by default
+- **API Routes**: Backend endpoints in `app/api/`
 
-**Happy analyzing!** 🚀
+### Prisma
+- **ORM**: Type-safe database access
+- **Schema**: Defined in `prisma/schema.prisma`
+- **Client**: Generated TypeScript client
+
+### LangChain/LangGraph
+- **Agents**: Multi-step reasoning workflows
+- **Tools**: Reusable functions (schema exploration, validation)
+- **SQL Agent**: Specialized agent for SQL generation
+
+### LangSmith
+- **Tracing**: Automatic LLM call tracking
+- **Observability**: Token usage, latency, costs
+- **Debugging**: Full request/response logging
+
+### Recharts
+- **Chart Library**: React chart components
+- **Types**: Bar, Line, Pie, Scatter, etc.
+- **Styling**: PowerBI-inspired design
+
+---
+
+## 🎯 Summary
+
+This application is a **complete AI-powered analytics platform** that:
+
+1. **Authenticates** users (multi-tenant)
+2. **Detects** database/CSV schemas automatically
+3. **Generates** SQL queries from natural language using AI
+4. **Executes** queries with automatic error fixing
+5. **Visualizes** results with beautiful charts
+6. **Tracks** everything with LangSmith observability
+
+The system uses **Next.js** for the frontend, **TypeScript** for type safety, **OpenAI GPT-4** for AI, **LangChain** for agents, **Prisma** for database access, and **Python Flask** for schema introspection.
+
+---
+
+## 📚 Additional Documentation
+
+- `LANGSMITH_SETUP.md` - LangSmith integration guide
+- `REALESTATE_TENANT_SETUP.md` - Multi-tenant setup guide
+- `prisma/schema.prisma` - Database schema definition
+
+---
+
+**Built with ❤️ using Next.js, TypeScript, OpenAI, LangChain, and Python**
+

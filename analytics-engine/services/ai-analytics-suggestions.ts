@@ -1,9 +1,9 @@
 import OpenAI from 'openai';
 import { DataSourceMetadata } from '../types';
+import { createTracedOpenAI } from '../utils/langsmith-tracer';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || '',
-});
+// Initialize traced OpenAI client
+const openai = createTracedOpenAI();
 
 /**
  * Helper function to identify key tables for analytics suggestions

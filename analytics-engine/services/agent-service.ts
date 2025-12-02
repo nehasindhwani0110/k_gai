@@ -101,9 +101,8 @@ export async function generateAdhocQueryEnhanced(
       const insightPrompt = `Explain what this SQL query does and what insights it provides:\n\n${query}\n\nQuestion: ${userQuestion}`;
       
       const { default: OpenAI } = await import('openai');
-      const openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-      });
+      const { createTracedOpenAI } = await import('../utils/langsmith-tracer');
+      const openai = createTracedOpenAI();
 
       const insightResponse = await openai.chat.completions.create({
         model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
@@ -163,9 +162,8 @@ export async function validateAndRefineQuery(
   maxRefinements: number = 3
 ): Promise<string> {
   const { default: OpenAI } = await import('openai');
-  const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  });
+  const { createTracedOpenAI } = await import('../utils/langsmith-tracer');
+  const openai = createTracedOpenAI();
 
   let currentQuery = query;
   let refinementCount = 0;
