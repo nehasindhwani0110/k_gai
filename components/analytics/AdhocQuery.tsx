@@ -260,6 +260,49 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
 
       // Include user question for better query fixing
       requestBody.user_question = question;
+      
+      // ALWAYS try to get dataSourceId for SQL queries (needed for canonical translation)
+      // Priority 1: Get from metadata (most reliable)
+      if ((metadata as any)?.data_source_id) {
+        requestBody.data_source_id = (metadata as any).data_source_id;
+      }
+      
+      // Priority 2: Get from sessionStorage
+      if (!requestBody.data_source_id && typeof window !== 'undefined') {
+        const dataSourceId = sessionStorage.getItem('dataSourceId');
+        if (dataSourceId) {
+          requestBody.data_source_id = dataSourceId;
+        }
+      }
+      
+      // No longer using canonical mapping - queries use actual database names directly
+      // Translation is disabled, so no need to set is_canonical_query flag
+      // Removed CANONICAL_DB check - all queries use actual names now
+      if (false && metadata?.source_type === 'CANONICAL_DB') {
+        requestBody.is_canonical_query = true;
+        console.log('[ADHOC-QUERY] 🔍 Canonical DB detected:', {
+          is_canonical_query: requestBody.is_canonical_query,
+          data_source_id: requestBody.data_source_id,
+          source_type: metadata.source_type,
+          metadata_has_data_source_id: !!(metadata as any)?.data_source_id,
+          sessionStorage_has_dataSourceId: typeof window !== 'undefined' ? !!sessionStorage.getItem('dataSourceId') : 'N/A',
+        });
+        
+        if (!requestBody.data_source_id) {
+          console.error('[ADHOC-QUERY] ❌ CRITICAL: data_source_id missing for CANONICAL_DB! Query will fail.');
+          console.error('[ADHOC-QUERY] Debug info:', {
+            metadata_keys: Object.keys(metadata || {}),
+            metadata_data_source_id: (metadata as any)?.data_source_id,
+            sessionStorage_dataSourceId: typeof window !== 'undefined' ? sessionStorage.getItem('dataSourceId') : 'N/A',
+          });
+        }
+      } else if (requestBody.data_source_id) {
+        // For other SQL sources, still log data_source_id for debugging
+        console.log('[ADHOC-QUERY] SQL query with data_source_id:', {
+          data_source_id: requestBody.data_source_id,
+          source_type: metadata?.source_type,
+        });
+      }
 
       const response = await fetch('/api/analytics/execute', {
         method: 'POST',
@@ -351,8 +394,33 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
             <p>{result.insight_summary}</p>
           </div>
 
-          {queryResults.length > 0 && (() => {
+          {(() => {
             try {
+              // Show empty state if no results
+              if (queryResults.length === 0) {
+                return (
+                  <div className="mt-6 p-6 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <div className="flex items-center gap-3 mb-2">
+                      <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <h3 className="text-lg font-semibold text-yellow-800">No Data Returned</h3>
+                    </div>
+                    <p className="text-yellow-700 mb-2">
+                      The query executed successfully but returned 0 rows. This could mean:
+                    </p>
+                    <ul className="list-disc list-inside text-yellow-700 space-y-1 ml-4">
+                      <li>The table exists but contains no matching data</li>
+                      <li>The query filters are too restrictive</li>
+                      <li>The table or column names might need adjustment</li>
+                    </ul>
+                    <div className="mt-4 p-3 bg-white rounded border border-yellow-300">
+                      <p className="text-sm font-mono text-gray-700 break-all">{result.query_content}</p>
+                    </div>
+                  </div>
+                );
+              }
+
               let vizType: VisualizationType = result.visualization_type as VisualizationType;
               
               // Auto-select visualization type if needed

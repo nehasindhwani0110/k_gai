@@ -50,7 +50,9 @@ export default function AnalyticsPage() {
         
         if (dataSourceType === 'SQL_DB') {
           // For SQL databases, load schema from API
-          const response = await fetch(`/api/analytics/data-sources/${dataSourceId}/schema`);
+          // Add forceRefresh=true to always get fresh schema (system catalog queries INFORMATION_SCHEMA directly)
+          // This ensures new tables/columns are detected immediately
+          const response = await fetch(`/api/analytics/data-sources/${dataSourceId}/schema?forceRefresh=true`);
           
           if (!response.ok) {
             throw new Error(`Failed to load schema: ${response.statusText}`);
@@ -63,10 +65,32 @@ export default function AnalyticsPage() {
             throw new Error(schemaMetadata.error);
           }
           
+          // CRITICAL: Always ensure data_source_id is included in metadata
+          // This is required for canonical query translation
+          if (!schemaMetadata.data_source_id && dataSourceId) {
+            schemaMetadata.data_source_id = dataSourceId;
+            console.log(`[ANALYTICS] ✅ Added data_source_id to metadata: ${dataSourceId}`);
+          } else if (schemaMetadata.data_source_id) {
+            console.log(`[ANALYTICS] ✅ Metadata already has data_source_id: ${schemaMetadata.data_source_id}`);
+          } else {
+            console.error(`[ANALYTICS] ❌ WARNING: No data_source_id available! dataSourceId=${dataSourceId}`);
+          }
+          
           // Store connection_string in sessionStorage if available
           if (schemaMetadata.connection_string && typeof window !== 'undefined') {
             sessionStorage.setItem('connectionString', schemaMetadata.connection_string);
           }
+          
+          // Also ensure dataSourceId is in sessionStorage (redundancy check)
+          if (dataSourceId && typeof window !== 'undefined') {
+            sessionStorage.setItem('dataSourceId', dataSourceId);
+          }
+          
+          console.log(`[ANALYTICS] Final metadata:`, {
+            source_type: schemaMetadata.source_type,
+            data_source_id: schemaMetadata.data_source_id,
+            table_count: schemaMetadata.tables?.length || 0,
+          });
           
           setMetadata(schemaMetadata);
           setDataSourceType('example'); // Mark as SQL DB source

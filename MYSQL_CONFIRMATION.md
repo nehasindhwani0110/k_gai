@@ -74,3 +74,4 @@ Your application is fully using MySQL database `ai-analytics`! 🎉
 
 
 
+

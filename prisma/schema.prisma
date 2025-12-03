@@ -13,10 +13,10 @@ model QueryHistory {
   id           String   @id @default(cuid())
   userQuestion String
   queryType    String // SQL_QUERY or QUERY_LOGIC
-  queryContent String
+  queryContent String   @db.Text // SQL query or query logic (Text for long queries)
   sourceType   String // SQL_DB, CSV_FILE, JSON_FILE, etc.
   filePath     String? // For file-based queries
-  results      String? // JSON string of results
+  results      String? @db.Text // JSON string of results (Text for large result sets)
   createdAt    DateTime @default(now())
 
   @@index([createdAt])
@@ -26,9 +26,9 @@ model QueryHistory {
 model DashboardMetric {
   id                String   @id @default(cuid())
   metricName        String
-  queryContent      String
+  queryContent      String   @db.Text // SQL query or query logic (Text for long queries)
   visualizationType String
-  insightSummary    String
+  insightSummary    String   @db.Text // Insight summary (Text for long summaries)
   sourceType        String
   filePath          String?
   createdAt         DateTime @default(now())
@@ -92,6 +92,8 @@ model SchemaRegistry {
   @@index([dataSourceId])
   @@index([canonicalTableName])
   @@index([canonicalColumnName])
+  @@index([dataSourceId, canonicalTableName]) // Composite index for faster lookups
+  @@index([dataSourceId, canonicalColumnName]) // Composite index for faster lookups
 }
 
 model SchemaMapping {
@@ -114,6 +116,8 @@ model SchemaMapping {
   @@index([dataSourceId])
   @@index([canonicalTable])
   @@index([canonicalColumn])
+  @@index([dataSourceId, canonicalTable]) // Composite index for faster lookups
+  @@index([dataSourceId, canonicalColumn]) // Composite index for faster lookups
 }
 
 model EmbeddingCache {

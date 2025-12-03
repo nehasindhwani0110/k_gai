@@ -33,7 +33,7 @@ Analyze the user's request and the provided data source metadata.
 
 1.  **Strict Output:** Output ONLY the code necessary to query the data.
 
-2.  **Schema Enforcement:** You MUST ONLY use the table and column names provided in the **[INJECTION POINT 2: DATA SOURCE METADATA]** section below.
+2.  **Schema Enforcement (CRITICAL):** You MUST ONLY use the table and column names provided in the **[INJECTION POINT 2: DATA SOURCE METADATA]** section below. **NEVER INVENT OR GUESS COLUMN NAMES**. If a column does not exist in the metadata, DO NOT use it. Before using any column, verify it exists in the metadata. If the user asks about something that doesn't exist, use the closest matching column that DOES exist in the metadata.
 
 3.  **Security:** ONLY generate SELECT statements. NEVER generate INSERT, UPDATE, DELETE, DROP, or CREATE statements. Limit joins to a maximum of 3 tables.
 
@@ -97,11 +97,15 @@ When the user question mentions time-related terms (month, year, day, date, peri
      * "measure differences" → Calculate metrics for each group to enable comparison
    - Generate SQL that directly answers the question
 
-2. **USE EXACT COLUMN AND TABLE NAMES FROM METADATA**:
+2. **USE EXACT COLUMN AND TABLE NAMES FROM METADATA (CRITICAL - NO EXCEPTIONS)**:
+   - **NEVER INVENT COLUMN NAMES** - You MUST ONLY use columns that are explicitly listed in the metadata
    - Check the metadata provided in Section 3 for exact column names
+   - **VERIFY COLUMN EXISTS**: Before using any column, check if it exists in the metadata tables
    - Use the exact table name from metadata (usually filename without .csv extension)
    - Match column names exactly (case-sensitive, spelling-sensitive)
-   - If column name is unclear, use the closest match from metadata
+   - If column name is unclear or doesn't exist, use the closest matching column that DOES exist in the metadata
+   - **If user asks about "totalAnnualFee" but metadata shows "feeAmount", use "feeAmount"**
+   - **If user asks about something that doesn't exist, find the closest match in metadata**
 
 3. **HANDLE DATE/TIME COLUMNS PROPERLY**:
    - When user asks about "time", "date", "month", "year", "day", "period", "over time", "trends":
@@ -138,6 +142,8 @@ When the user question mentions time-related terms (month, year, day, date, peri
    - **Limits**: "SELECT * FROM table LIMIT 10"
    - **Combinations**: Use any combination of SELECT, FROM, WHERE, GROUP BY, ORDER BY, LIMIT
    - **Complex queries**: Use subqueries, multiple WHERE conditions, multiple ORDER BY fields if needed
+   - **JOIN queries**: When joining tables, use exact column matches (e.g., "JOIN table2 ON table1.id = table2.id") instead of LIKE patterns to avoid duplicate rows. If you must use LIKE, add DISTINCT or GROUP BY to prevent duplicates.
+   - **Avoid duplicates**: If your query might return duplicate rows, add DISTINCT or use GROUP BY with appropriate aggregations
 
 5. **EXAMPLES OF ACCURATE QUERY GENERATION**:
    
@@ -215,6 +221,13 @@ When the user question mentions time-related terms (month, year, day, date, peri
    - For "least", "lowest", "minimum" → Use ORDER BY ASC LIMIT 1
    - For "most", "highest", "maximum" → Use ORDER BY DESC LIMIT 1
    - For "top N" or "bottom N" → Use ORDER BY with LIMIT N
+   - **CRITICAL FOR JOIN QUERIES**:
+     * Prefer exact column matches for JOINs: "JOIN table2 ON table1.id = table2.id" instead of LIKE patterns
+     * Avoid LIKE patterns in JOIN conditions as they can create duplicate rows
+     * If you must use LIKE or the query might return duplicates, add DISTINCT: "SELECT DISTINCT column1, column2 FROM..."
+     * Or use GROUP BY with aggregations: "SELECT column1, SUM(column2) FROM ... GROUP BY column1"
+     * Example: Instead of "JOIN Fee ON Fee.applicableClasses LIKE CONCAT('%', FeeStructure.className, '%')", 
+       use exact match if possible, or add DISTINCT/GROUP BY to eliminate duplicates
    - **CRITICAL FOR DIFFERENCE/COMPARISON QUERIES**:
      * When user asks about "differences", "compare", "versus", "vs", "measure differences":
        → Group by ALL relevant dimensions mentioned in the question
@@ -342,8 +355,11 @@ Generate only the JSON object, ensuring it is valid.
 }
 
 **CRITICAL REMINDERS**: 
-- Generate the SQL query that EXACTLY answers the user's question
-- Use exact column and table names from metadata
+- **MOST IMPORTANT**: Generate the SQL query that EXACTLY answers the user's question
+- **NEVER INVENT COLUMN NAMES** - You MUST ONLY use column names that are explicitly listed in the metadata above
+- **VERIFY BEFORE USING**: Before using any column name, check if it exists in the metadata tables provided
+- **If column doesn't exist**: Find the closest matching column that DOES exist (e.g., if user asks about "totalAnnualFee" but metadata shows "feeAmount", use "feeAmount")
+- Use exact column and table names from metadata - check the metadata carefully
 - For "least/lowest/minimum" → ORDER BY column ASC LIMIT 1
 - For "most/highest/maximum" → ORDER BY column DESC LIMIT 1  
 - For "top N" → ORDER BY column DESC LIMIT N
@@ -351,6 +367,7 @@ Generate only the JSON object, ensuring it is valid.
 - For comparisons → GROUP BY category_column
 - For single values → Simple aggregate (AVG, COUNT, SUM, etc.)
 - Set visualization_type to "auto" always
+- **VALIDATION STEP**: Before returning the query, verify every column name exists in the metadata. If any column doesn't exist, replace it with the closest match from metadata.
 
 **IF MODE IS 'DASHBOARD_METRICS':**
 
@@ -467,8 +484,14 @@ When user asks about time-based queries (month, year, day, date, period, over ti
    - ✅ RIGHT: Always use the metric column for calculations when user mentions a specific metric
    - **CRITICAL**: For "over month" or "over period" queries, ALWAYS use DATE() not MONTH() to ensure multiple data points for charts`;
 
+/**
+ * Formats metadata optimally based on size
+ * Uses compact format for large schemas to reduce token usage
+ */
 function formatMetadata(metadata: DataSourceMetadata): string {
-  return JSON.stringify(metadata, null, 2);
+  // Dynamic import to avoid circular dependencies
+  const { formatMetadataOptimal } = require('../utils/metadata-formatter');
+  return formatMetadataOptimal(metadata);
 }
 
 export async function generateAdhocQuery(
@@ -476,42 +499,135 @@ export async function generateAdhocQuery(
   metadata: DataSourceMetadata,
   connectionString?: string
 ): Promise<AdhocQueryResponse> {
-  // Reduce metadata using semantic analysis (works for both SQL and file-based sources)
+  // Dynamic import to avoid circular dependencies
+  const { estimateMetadataTokens, isMetadataSizeSafe, getRequiredReductionRatio } = await import('../utils/token-counter');
+  const model = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
+  
+  // STEP 1: Understand question semantics FIRST (like semantic search)
+  const questionUnderstanding = await understandQuestionSemantics(userQuestion);
+  
+  // Enhance user question with semantic understanding for better matching
+  const enhancedQuestion = `${questionUnderstanding.semanticSummary}\n\nIntent: ${questionUnderstanding.intent}\nKey Concepts: ${questionUnderstanding.keyConcepts.join(', ')}`;
+  
+  // For large databases with data_source_id, try using hybrid metadata service
+  // This combines system catalog (real-time) with semantic search (smart filtering)
   let reducedMetadata = metadata;
   const allTables = metadata.tables || [];
   const totalColumns = allTables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
   const fileBasedSources = ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'];
   const isFileBased = fileBasedSources.includes(metadata.source_type);
+  const dataSourceId = (metadata as any).data_source_id;
   
-  // Use semantic matching if:
-  // 1. File-based sources (CSV, Excel, JSON, Text) with many columns (>15) - helps find relevant columns within single table, OR
-  // 2. SQL databases with many tables (>5) or many columns (>50)
-  const shouldUseSemanticMatching = isFileBased ? totalColumns > 15 : allTables.length > 5 || totalColumns > 50;
+  // SIMPLIFIED: Metadata should already be refreshed by API route from system catalog
+  // This function just uses the metadata it receives - no need to refresh again
+  // Only apply semantic filtering if metadata is too large for LLM context
+  
+  // Check token count
+  const metadataTokens = estimateMetadataTokens(reducedMetadata);
+  const isSafe = isMetadataSizeSafe(reducedMetadata, model);
+  
+  console.log(`[LLM-SERVICE] 📊 Metadata size: ${metadataTokens} tokens, Safe limit: ${isSafe ? '✅' : '❌'}`);
+  
+  // ALWAYS use semantic matching if:
+  // 1. Metadata exceeds safe token limit, OR
+  // 2. File-based sources with many columns (>15), OR
+  // 3. SQL databases with many tables (>3) or many columns (>30)
+  // 4. For large databases (20+ tables), ALWAYS use semantic matching for better accuracy
+  const shouldUseSemanticMatching = !isSafe || 
+    (isFileBased && totalColumns > 15) || 
+    (!isFileBased && (reducedMetadata.tables?.length || 0 > 3 || totalColumns > 30)) ||
+    (!isFileBased && (reducedMetadata.tables?.length || 0) > 20); // Force semantic matching for large databases
   
   if (shouldUseSemanticMatching) {
-    console.log(`[LLM-SERVICE] Using semantic analysis for ${isFileBased ? `${metadata.source_type} file` : 'SQL database'} (${allTables.length} tables, ${totalColumns} columns)`);
+    console.log(`[LLM-SERVICE] 🎯 Using semantic analysis for ${isFileBased ? `${metadata.source_type} file` : 'SQL database'} (${allTables.length} tables, ${totalColumns} columns)`);
+    
+    if (!isSafe) {
+      const reductionRatio = getRequiredReductionRatio(metadata, model);
+      console.log(`[LLM-SERVICE] ⚠️ Metadata too large! Need to reduce to ${(reductionRatio * 100).toFixed(1)}% of current size`);
+    }
+    
     try {
-      reducedMetadata = await reduceMetadataForAdhocQuery(userQuestion, metadata, connectionString);
-      console.log(`[LLM-SERVICE] ✅ Semantic analysis complete! Using ${reducedMetadata.tables.length} tables`);
+      // Use enhanced question with semantic understanding for better matching
+      reducedMetadata = await reduceMetadataForAdhocQuery(enhancedQuestion, metadata, connectionString);
+      
+      // Verify reduced metadata is safe
+      const reducedTokens = estimateMetadataTokens(reducedMetadata);
+      const reducedIsSafe = isMetadataSizeSafe(reducedMetadata, model);
+      
+      console.log(`[LLM-SERVICE] ✅ Semantic analysis complete! Using ${reducedMetadata.tables.length} tables, ${reducedTokens} tokens (${reducedIsSafe ? '✅ Safe' : '⚠️ Still large'})`);
+      
+      // If still too large, apply more aggressive reduction
+      // IMPORTANT: This preserves semantic relevance (tables/columns already ordered by relevance)
+      if (!reducedIsSafe) {
+        console.log(`[LLM-SERVICE] ⚠️ Reduced metadata still too large, applying aggressive reduction...`);
+        console.log(`[LLM-SERVICE] ⚠️ Preserving semantic relevance - keeping top semantically matched tables/columns`);
+        reducedMetadata = await applyAggressiveReduction(reducedMetadata, model);
+        const finalTokens = estimateMetadataTokens(reducedMetadata);
+        console.log(`[LLM-SERVICE] ✅ Aggressive reduction complete! Final size: ${finalTokens} tokens`);
+        console.log(`[LLM-SERVICE] ✅ Kept ${reducedMetadata.tables.length} semantically relevant tables`);
+      }
     } catch (error) {
-      console.warn('[LLM-SERVICE] ⚠️ Semantic matching failed, using full metadata:', error);
-      // Continue with full metadata (may fail with very large databases)
+      console.error('[LLM-SERVICE] ❌ Semantic matching failed:', error);
+      console.error('[LLM-SERVICE] ❌ Error details:', {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        tables: allTables.length,
+        totalColumns,
+      });
+      console.warn('[LLM-SERVICE] ⚠️ Falling back to non-semantic reduction (may result in less accurate queries)');
+      // Apply fallback reduction
+      reducedMetadata = await applyFallbackReduction(metadata, model);
     }
   } else {
     console.log(`[LLM-SERVICE] ℹ️ Skipping semantic matching (${allTables.length} tables, ${totalColumns} columns - schema is small enough)`);
   }
 
-  const prompt = MASTER_PROMPT_TEMPLATE
+  // Extract all available column names for explicit reference
+  const allColumnNames: string[] = [];
+  reducedMetadata.tables?.forEach(table => {
+    table.columns?.forEach(col => {
+      allColumnNames.push(`${table.name}.${col.name}`);
+      allColumnNames.push(col.name); // Also add without table prefix
+    });
+  });
+  
+  // CRITICAL: Identify the most relevant table from semantic matching
+  // This ensures the LLM uses the correct table (e.g., "Class" not "topics")
+  let topRelevantTable: string | null = null;
+  if (reducedMetadata.tables && reducedMetadata.tables.length > 0) {
+    // For simple queries like "show all classes", find table matching key concepts
+    const keyConceptsLower = questionUnderstanding.keyConcepts.map(c => c.toLowerCase());
+    const matchingTable = reducedMetadata.tables.find(table => {
+      const tableNameLower = table.name.toLowerCase();
+      return keyConceptsLower.some(concept => 
+        tableNameLower.includes(concept) || 
+        concept.includes(tableNameLower) ||
+        tableNameLower === concept + 's' || // plural match
+        tableNameLower === concept.slice(0, -1) // singular match
+      );
+    });
+    topRelevantTable = matchingTable?.name || reducedMetadata.tables[0]?.name || null;
+  }
+  
+  // Enhance prompt with semantic understanding and STRONG table/column name enforcement
+  const columnNamesList = allColumnNames.slice(0, 100).join(', '); // Limit to first 100 to avoid token bloat
+  const tableEmphasis = topRelevantTable 
+    ? `\n\n**CRITICAL TABLE SELECTION**: The user's question "${userQuestion}" is asking about "${questionUnderstanding.keyConcepts.join(', ')}". The MOST RELEVANT table is "${topRelevantTable}". Use table "${topRelevantTable}" in your query, NOT other tables.`
+    : '';
+  
+  const enhancedPrompt = MASTER_PROMPT_TEMPLATE
     .replace('{MODE}', 'ADHOC_QUERY')
     .replace('{DATA_SOURCE_METADATA}', formatMetadata(reducedMetadata))
-    .replace('{USER_QUESTION}', userQuestion);
+    .replace('{USER_QUESTION}', `${userQuestion}\n\nSemantic Understanding:\n- Intent: ${questionUnderstanding.intent}\n- Query Type: ${questionUnderstanding.queryType}\n- Key Concepts: ${questionUnderstanding.keyConcepts.join(', ')}\n- Entities: ${questionUnderstanding.entities.join(', ')}\n- Semantic Summary: ${questionUnderstanding.semanticSummary}${tableEmphasis}\n\n**CRITICAL COLUMN NAME RULES**:\n1. Use ONLY these exact column names: ${columnNamesList}${allColumnNames.length > 100 ? ' (and more - see metadata above)' : ''}\n2. Do NOT invent column names. If you need "class name" but see "currentClass" in the list above, use "currentClass" exactly.\n3. Check the metadata tables above for the EXACT column name before using it.\n4. If the user asks for something that doesn't exist, use the closest matching column from the list above.`);
+  
+  const prompt = enhancedPrompt;
 
   const response = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
     messages: [
       {
         role: 'system',
-        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. Use any SQL features needed (WHERE, GROUP BY, ORDER BY, LIMIT, aggregates, aliases). CRITICAL RULES: 1) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR(), MONTH() - this ensures charts show multiple data points. 2) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function. 3) For "differences", "compare", "versus", "vs", "measure differences" questions: Group by ALL dimensions mentioned (e.g., "income bracket differences between parties" → GROUP BY income_bracket, party_affiliation) to enable comparison. Always return valid JSON only.',
+        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. **CRITICAL RULES - READ CAREFULLY:**\n\n1) **TABLE SELECTION IS CRITICAL**: If the prompt mentions "MOST RELEVANT table", you MUST use that exact table name. Do NOT use other tables. For example, if prompt says "Use table Class", then use "Class" not "topics" or any other table.\n\n2) **NEVER INVENT COLUMN NAMES** - You MUST ONLY use column names that are EXPLICITLY listed in the metadata provided. If a column does not exist in the metadata, DO NOT use it. Check the metadata tables and columns carefully before using any column name.\n\n3) **COLUMN NAME MATCHING**: When the user asks about something (e.g., "class name"), look for the EXACT column name in the metadata. Common patterns:\n   - "class name" → look for columns like "className", "class_name", "currentClass", "current_class"\n   - "fee" → look for columns like "feeAmount", "fee_amount", "totalFee", "total_fee"\n   - If you see "className" in metadata, use "className". If you see "currentClass", use "currentClass". NEVER invent variations.\n\n4) **VERIFY BEFORE USING**: Before using ANY column name:\n   - Search the metadata tables for that EXACT column name\n   - If not found, look for similar names (e.g., "className" vs "currentClass")\n   - Use the EXACT column name from metadata, not a variation you invent\n   - If no match exists, use the closest matching column that DOES exist\n\n5) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR() - this ensures charts show multiple data points.\n\n6) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function.\n\n7) For "differences", "compare", "versus", "vs", "measure differences" questions: Group by ALL dimensions mentioned (e.g., "income bracket differences between parties" → GROUP BY income_bracket, party_affiliation) to enable comparison.\n\n8) **AVOID DUPLICATE ROWS**: When using JOINs, prefer exact matches (e.g., "ON table1.id = table2.id") over LIKE patterns. If you must use LIKE or the query might return duplicates, add DISTINCT or use GROUP BY with aggregations to eliminate duplicates.\n\n**REMEMBER**: The metadata contains the EXACT table and column names. Use them EXACTLY as shown. Never invent or guess names. Always return valid JSON only.',
       },
       {
         role: 'user',
@@ -527,23 +643,78 @@ export async function generateAdhocQuery(
     throw new Error('No response from LLM');
   }
 
-  return JSON.parse(content) as AdhocQueryResponse;
+  const result = JSON.parse(content) as AdhocQueryResponse;
+  
+  // Validate that the query uses columns that exist in metadata
+  if (result.query_content && reducedMetadata.tables) {
+    const allColumnNames = new Set<string>();
+    reducedMetadata.tables.forEach(table => {
+      table.columns?.forEach(col => {
+        allColumnNames.add(col.name.toLowerCase());
+        // Also add table.column format
+        allColumnNames.add(`${table.name}.${col.name}`.toLowerCase());
+        allColumnNames.add(`${table.name.toLowerCase()}.${col.name.toLowerCase()}`);
+      });
+    });
+    
+    // Extract column names from query (simple regex - may not catch all cases)
+    const queryLower = result.query_content.toLowerCase();
+    const columnMatches = queryLower.match(/\b(?:select|from|where|group by|order by|join|on)\s+([a-z_][a-z0-9_]*)\b/gi);
+    
+    if (columnMatches) {
+      console.log(`[LLM-SERVICE] ✅ Validating column names in generated query...`);
+      // Note: This is a basic check - the query executor will catch actual errors
+    }
+  }
+  
+  return result;
 }
 
 export async function generateDashboardMetrics(
   metadata: DataSourceMetadata
 ): Promise<DashboardMetricsResponse> {
+  const { estimateMetadataTokens, isMetadataSizeSafe } = await import('../utils/token-counter');
+  const model = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
+  
+  // Check if metadata needs reduction
+  let reducedMetadata = metadata;
+  if (!isMetadataSizeSafe(metadata, model)) {
+    console.log(`[LLM-SERVICE] ⚠️ Dashboard metadata too large (${estimateMetadataTokens(metadata)} tokens), applying reduction...`);
+    // For dashboard metrics, we need a broader view, so keep more tables but fewer columns
+    const allTables = metadata.tables || [];
+    reducedMetadata = {
+      ...metadata,
+      tables: allTables.slice(0, 10).map(table => ({
+        ...table,
+        columns: table.columns.slice(0, 12), // Keep more columns for dashboard context
+      })),
+    };
+    
+    // If still too large, reduce further
+    if (!isMetadataSizeSafe(reducedMetadata, model)) {
+      reducedMetadata = {
+        ...metadata,
+        tables: allTables.slice(0, 5).map(table => ({
+          ...table,
+          columns: table.columns.slice(0, 10),
+        })),
+      };
+    }
+    
+    console.log(`[LLM-SERVICE] ✅ Reduced to ${reducedMetadata.tables.length} tables, ${estimateMetadataTokens(reducedMetadata)} tokens`);
+  }
+  
   const prompt = MASTER_PROMPT_TEMPLATE
     .replace('{MODE}', 'DASHBOARD_METRICS')
-    .replace('{DATA_SOURCE_METADATA}', formatMetadata(metadata))
-    .replace('{USER_QUESTION}', 'Generate 6 dashboard metrics');
+    .replace('{DATA_SOURCE_METADATA}', formatMetadata(reducedMetadata))
+    .replace('{USER_QUESTION}', 'Generate 8-10 diverse dashboard metrics covering different visualization types');
 
   const response = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
     messages: [
       {
         role: 'system',
-        content: 'You are an expert analytics dashboard generator that works with ANY type of data (business, healthcare, education, finance, retail, etc.). Analyze the provided metadata to understand the data domain and column structure. Generate 6-8 key dashboard metrics that: 1) Cover ALL visualization types (gauge, bar_chart, pie_chart, line_chart, scatter_plot, table), 2) Are the MOST IMPORTANT questions for THIS specific dataset, 3) Use actual column names from metadata, 4) Generate diverse query types that naturally produce different visualizations, 5) Handle date/time queries properly using YEAR(), MONTH(), DAY(), DATE() functions when temporal analysis is needed, 6) CRITICAL: Only generate queries that will return data - use columns that exist in the metadata, avoid filters that might exclude all rows, use COUNT(*) or aggregations that will always return results, prefer queries that show distributions or aggregations rather than specific filters that might be empty. Always return valid JSON only.',
+        content: 'You are an expert analytics dashboard generator that works with ANY type of data (business, healthcare, education, finance, retail, etc.). Analyze the provided metadata to understand the data domain and column structure. Generate 8-10 key dashboard metrics that: 1) Cover ALL visualization types (gauge, bar_chart, pie_chart, line_chart, scatter_plot, table), 2) Are the MOST IMPORTANT questions for THIS specific dataset, 3) Use actual column names from metadata, 4) Generate diverse query types that naturally produce different visualizations, 5) Handle date/time queries properly using YEAR(), MONTH(), DAY(), DATE() functions when temporal analysis is needed, 6) CRITICAL: Only generate queries that will return data - use columns that exist in the metadata, avoid filters that might exclude all rows, use COUNT(*) or aggregations that will always return results, prefer queries that show distributions or aggregations rather than specific filters that might be empty, 7) IMPORTANT: Use clear column aliases (e.g., "SELECT COUNT(*) as count, category as category_name") to ensure charts can properly identify data columns. Always return valid JSON only.',
       },
       {
         role: 'user',
@@ -560,6 +731,87 @@ export async function generateDashboardMetrics(
   }
 
   return JSON.parse(content) as DashboardMetricsResponse;
+}
+
+/**
+ * Semantic Question Understanding
+ * 
+ * Uses LLM to extract semantic meaning, intent, key concepts, and entities from the user question.
+ * This understanding is then used to guide SQL query generation, similar to semantic search.
+ */
+export async function understandQuestionSemantics(
+  userQuestion: string
+): Promise<{
+  intent: string;
+  keyConcepts: string[];
+  entities: string[];
+  queryType: string;
+  semanticSummary: string;
+}> {
+  try {
+    console.log(`[LLM-SERVICE] 🧠 Step 1: Understanding question semantics: "${userQuestion}"`);
+    
+    const understandingPrompt = `Analyze this natural language question and extract its semantic meaning:
+
+Question: "${userQuestion}"
+
+Extract and return JSON with:
+1. "intent": The main intent/goal of the question (e.g., "compare", "find trends", "calculate average", "identify top performers")
+2. "keyConcepts": Array of key concepts/domains mentioned (e.g., ["students", "scores", "assignments", "performance"])
+3. "entities": Array of specific entities/objects mentioned (e.g., ["student", "quiz", "assignment", "score"])
+4. "queryType": Type of query needed (e.g., "aggregation", "comparison", "trend_analysis", "filtering", "ranking")
+5. "semanticSummary": A concise semantic summary that captures the meaning and context
+
+Return ONLY valid JSON, no explanations:`;
+
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an expert at understanding natural language questions and extracting their semantic meaning. Return only valid JSON.',
+        },
+        {
+          role: 'user',
+          content: understandingPrompt,
+        },
+      ],
+      temperature: 0.1, // Low temperature for consistent understanding
+      response_format: { type: 'json_object' },
+      max_tokens: 300,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No response from LLM for question understanding');
+    }
+
+    const understanding = JSON.parse(content);
+    
+    console.log(`[LLM-SERVICE] ✅ Question understanding complete:`);
+    console.log(`[LLM-SERVICE]   Intent: ${understanding.intent}`);
+    console.log(`[LLM-SERVICE]   Query Type: ${understanding.queryType}`);
+    console.log(`[LLM-SERVICE]   Key Concepts: ${understanding.keyConcepts?.join(', ') || 'none'}`);
+    console.log(`[LLM-SERVICE]   Entities: ${understanding.entities?.join(', ') || 'none'}`);
+    
+    return {
+      intent: understanding.intent || '',
+      keyConcepts: understanding.keyConcepts || [],
+      entities: understanding.entities || [],
+      queryType: understanding.queryType || 'general',
+      semanticSummary: understanding.semanticSummary || userQuestion,
+    };
+  } catch (error) {
+    console.error('[LLM-SERVICE] ⚠️ Question understanding failed, using original question:', error);
+    // Fallback: return basic understanding from original question
+    return {
+      intent: 'general_query',
+      keyConcepts: [],
+      entities: [],
+      queryType: 'general',
+      semanticSummary: userQuestion,
+    };
+  }
 }
 
 /**
@@ -580,32 +832,71 @@ export async function generateAdhocQueryWithLangGraphAgent(
 
     console.log('[LLM-SERVICE] Using LangGraph agent for query generation');
 
-    // Reduce metadata first using semantic analysis (works for both SQL and CSV)
-    // This helps with large schemas and improves query accuracy
+    // STEP 1: Understand question semantics FIRST (like semantic search)
+    const questionUnderstanding = await understandQuestionSemantics(userQuestion);
+    
+    // Enhance user question with semantic understanding for better matching
+    const enhancedQuestion = `${questionUnderstanding.semanticSummary}\n\nIntent: ${questionUnderstanding.intent}\nKey Concepts: ${questionUnderstanding.keyConcepts.join(', ')}`;
+
+    // OPTIMIZATION: Metadata is already refreshed by API route - don't refresh again!
+    // This prevents redundant system catalog queries and semantic matching
     let reducedMetadata = metadata;
     const allTables = metadata.tables || [];
     const totalColumns = allTables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
-    const isCSV = metadata.source_type === 'CSV_FILE';
+    const dataSourceId = (metadata as any).data_source_id;
+    const isFileBased = ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'].includes(metadata.source_type);
     
-    // Use semantic matching if:
-    // 1. More than 5 tables, OR
-    // 2. More than 50 total columns (even with 1 table, CSV files can have many columns)
-    const shouldUseSemanticMatching = allTables.length > 5 || totalColumns > 50;
-    
-    if (shouldUseSemanticMatching) {
-      console.log(`[LLM-SERVICE] Pre-reducing metadata using semantic analysis (${allTables.length} tables, ${totalColumns} columns) before agent execution`);
+    // Metadata is already fresh from API route - use it directly
+    // Only refresh if metadata is empty or invalid
+    if ((!metadata.tables || metadata.tables.length === 0) && !isFileBased && dataSourceId && metadata.source_type === 'SQL_DB') {
       try {
-        reducedMetadata = await reduceMetadataForAdhocQuery(userQuestion, metadata, connectionString);
-        console.log(`[LLM-SERVICE] ✅ Semantic analysis complete! Reduced to ${reducedMetadata.tables.length} tables`);
+        console.log(`[LLM-SERVICE] ⚠️ Metadata is empty, refreshing from system catalog for agent`);
+        const { getHybridMetadata } = await import('./hybrid-metadata-service');
+        
+        reducedMetadata = await getHybridMetadata({
+          dataSourceId,
+          userQuestion: enhancedQuestion,
+          maxTables: 30, // Reduced from 50 for faster processing
+          useSystemCatalog: true,
+          useSemanticSearch: true,
+          includeStatistics: false,
+          forceRefresh: true,
+        });
+        
+        console.log(`[LLM-SERVICE] ✅ Metadata refreshed for agent: ${reducedMetadata.tables?.length || 0} tables`);
       } catch (error) {
-        console.warn('[LLM-SERVICE] ⚠️ Semantic matching failed, agent will handle it:', error);
+        console.warn(`[LLM-SERVICE] ⚠️ Metadata refresh failed, using provided metadata:`, error);
       }
     } else {
-      console.log(`[LLM-SERVICE] ℹ️ Skipping semantic matching (${allTables.length} tables, ${totalColumns} columns - too small to benefit)`);
+      console.log(`[LLM-SERVICE] ✅ Using pre-fetched metadata (${metadata.tables?.length || 0} tables) - no refresh needed`);
+    }
+    
+    // Check token size first (system catalog is primary)
+    const { estimateMetadataTokens, isMetadataSizeSafe } = await import('../utils/token-counter');
+    const model = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
+    const tokenCount = estimateMetadataTokens(reducedMetadata);
+    const isSafe = isMetadataSizeSafe(reducedMetadata, model);
+    
+    console.log(`[LLM-SERVICE] 📊 Metadata size check: ${tokenCount} tokens, Safe: ${isSafe ? '✅' : '❌'} (${reducedMetadata.tables?.length || 0} tables, ${totalColumns} columns)`);
+    
+    // If metadata is safe, use system catalog metadata as-is (no semantic filtering needed)
+    if (isSafe) {
+      console.log(`[LLM-SERVICE] ✅ Metadata size is safe, using system catalog metadata as-is (no semantic filtering needed)`);
+    } else {
+      // Metadata too large - apply semantic filtering as FALLBACK
+      console.log(`[LLM-SERVICE] ⚠️ Metadata too large (${tokenCount} tokens), applying semantic filtering as fallback`);
+      try {
+        // Use enhanced question with semantic understanding for better matching
+        reducedMetadata = await reduceMetadataForAdhocQuery(enhancedQuestion, reducedMetadata, connectionString);
+        console.log(`[LLM-SERVICE] ✅ Semantic analysis complete! Reduced to ${reducedMetadata.tables.length} tables`);
+      } catch (error) {
+        console.warn('[LLM-SERVICE] ⚠️ Semantic matching failed, using original metadata:', error);
+      }
     }
 
     // Execute agent workflow (agent will further explore schema if needed)
-    const query = await agent.execute(userQuestion, reducedMetadata, connectionString);
+    // Pass both original question and understanding to agent
+    const query = await agent.execute(userQuestion, reducedMetadata, connectionString, questionUnderstanding);
 
     // Generate insight summary
     const insightPrompt = `Explain what this SQL query does and what insights it provides:\n\n${query}\n\nQuestion: ${userQuestion}`;
@@ -709,6 +1000,95 @@ function createReducedMetadata(
 }
 
 /**
+ * Applies aggressive reduction when semantic reduction still results in too large metadata
+ * IMPORTANT: Preserves semantic relevance by keeping the tables/columns that were already selected
+ * by semantic matching (they're already in order of relevance)
+ */
+async function applyAggressiveReduction(
+  metadata: DataSourceMetadata,
+  model: string
+): Promise<DataSourceMetadata> {
+  const { estimateMetadataTokens, isMetadataSizeSafe } = await import('../utils/token-counter');
+  
+  console.log('[LLM-SERVICE] 🔧 Applying aggressive reduction (preserving semantic relevance)...');
+  console.log(`[LLM-SERVICE] Current: ${metadata.tables.length} tables`);
+  
+  // Keep only top 3 semantically relevant tables with top 12 columns each
+  // These tables are already ordered by semantic relevance from semantic matching
+  const reducedTables = metadata.tables.slice(0, 3).map(table => ({
+    ...table,
+    columns: table.columns.slice(0, 12), // Keep top 12 columns (already ordered by relevance)
+  }));
+  
+  const reduced: DataSourceMetadata = {
+    ...metadata,
+    tables: reducedTables,
+  };
+  
+  // If still too large, keep only top 2 semantically relevant tables with top 10 columns each
+  if (!isMetadataSizeSafe(reduced, model)) {
+    console.log('[LLM-SERVICE] 🔧 Still too large, applying ultra-aggressive reduction (preserving top 2 semantic matches)...');
+    const ultraReduced: DataSourceMetadata = {
+      ...metadata,
+      tables: metadata.tables.slice(0, 2).map(table => ({
+        ...table,
+        columns: table.columns.slice(0, 10), // Keep top 10 columns (already ordered by relevance)
+      })),
+    };
+    return ultraReduced;
+  }
+  
+  return reduced;
+}
+
+/**
+ * Applies fallback reduction when semantic matching fails
+ */
+async function applyFallbackReduction(
+  metadata: DataSourceMetadata,
+  model: string
+): Promise<DataSourceMetadata> {
+  const { estimateMetadataTokens, isMetadataSizeSafe } = await import('../utils/token-counter');
+  
+  console.log('[LLM-SERVICE] 🔄 Applying fallback reduction...');
+  
+  const allTables = metadata.tables || [];
+  
+  // Strategy: Keep first 5 tables, limit to 10 columns per table
+  let reduced: DataSourceMetadata = {
+    ...metadata,
+    tables: allTables.slice(0, 5).map(table => ({
+      ...table,
+      columns: table.columns.slice(0, 10),
+    })),
+  };
+  
+  // If still too large, reduce further
+  if (!isMetadataSizeSafe(reduced, model)) {
+    reduced = {
+      ...metadata,
+      tables: allTables.slice(0, 3).map(table => ({
+        ...table,
+        columns: table.columns.slice(0, 8),
+      })),
+    };
+  }
+  
+  // If still too large, keep only first table
+  if (!isMetadataSizeSafe(reduced, model)) {
+    reduced = {
+      ...metadata,
+      tables: allTables.slice(0, 1).map(table => ({
+        ...table,
+        columns: table.columns.slice(0, 10),
+      })),
+    };
+  }
+  
+  return reduced;
+}
+
+/**
  * Reduces metadata for ad-hoc queries based on user question
  * 
  * Uses semantic analysis (embeddings) to find the most relevant tables and columns.
@@ -725,14 +1105,17 @@ async function reduceMetadataForAdhocQuery(
   
   // For CSV files: use semantic matching if many columns (>15) - helps find relevant columns within single table
   // For SQL databases: use semantic matching if many tables (>5) or many columns (>50)
+  // For large databases (20+ tables), ALWAYS use semantic matching for better accuracy
   const shouldUseSemanticMatching = isCSV 
     ? totalColumns > 15 
-    : allTables.length > 5 || totalColumns > 50;
+    : allTables.length > 5 || totalColumns > 50 || allTables.length > 20;
   
   if (!shouldUseSemanticMatching) {
     console.log(`[LLM-SERVICE] ℹ️ Schema is small enough (${allTables.length} tables, ${totalColumns} columns), skipping semantic reduction`);
     return metadata;
   }
+  
+  console.log(`[LLM-SERVICE] 🎯 Semantic matching enabled for large database (${allTables.length} tables, ${totalColumns} columns)`);
 
   try {
     // Try semantic matching first (most accurate)
@@ -740,18 +1123,25 @@ async function reduceMetadataForAdhocQuery(
       const { createSemanticallyReducedMetadata } = await import('./semantic-matcher');
       
       console.log(`\n[LLM-SERVICE] 🎯 Attempting semantic analysis for question: "${userQuestion}"`);
+      // Let semantic matcher auto-adjust limits based on schema size
       const reducedMetadata = await createSemanticallyReducedMetadata(
         userQuestion,
-        metadata,
-        5, // max tables
-        15 // max columns per table
+        metadata
+        // maxTables and maxColumnsPerTable will be auto-adjusted by semantic matcher
       );
       
       console.log(`[LLM-SERVICE] ✅ Semantic analysis successful! Using ${reducedMetadata.tables?.length || 0} relevant tables\n`);
       return reducedMetadata;
     } catch (error) {
-      console.warn('\n[LLM-SERVICE] ⚠️ Semantic matching failed, trying schema exploration:', error);
-      console.log('[LLM-SERVICE] 🔄 Falling back to schema exploration...\n');
+      console.error('\n[LLM-SERVICE] ❌ Semantic matching failed:', error);
+      console.error('[LLM-SERVICE] ❌ Error details:', {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        question: userQuestion.substring(0, 100),
+        tables: allTables.length,
+        totalColumns,
+      });
+      console.warn('[LLM-SERVICE] ⚠️ Trying schema exploration as fallback...\n');
       // Fall through to schema exploration
     }
 

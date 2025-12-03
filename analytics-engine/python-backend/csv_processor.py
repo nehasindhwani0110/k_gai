@@ -6,8 +6,49 @@ Uses Pandas and DuckDB for CSV processing and query execution
 import pandas as pd
 import duckdb
 from typing import Dict, List, Any, Optional
+from datetime import datetime, date, time, timedelta
+from decimal import Decimal
 import json
 import os
+
+
+def serialize_value(value: Any) -> Any:
+    """
+    Convert Python objects to JSON-serializable types.
+    
+    Handles:
+    - datetime, date, time -> ISO format strings
+    - timedelta -> total seconds (float)
+    - Decimal -> float
+    - bytes -> base64 encoded string
+    - pandas Timestamp -> ISO format string
+    - Other types -> as-is
+    """
+    if value is None:
+        return None
+    elif pd.isna(value):
+        return None
+    elif isinstance(value, (pd.Timestamp, datetime)):
+        return value.isoformat()
+    elif isinstance(value, date):
+        return value.isoformat()
+    elif isinstance(value, time):
+        return value.isoformat()
+    elif isinstance(value, timedelta):
+        return value.total_seconds()
+    elif isinstance(value, Decimal):
+        return float(value)
+    elif isinstance(value, bytes):
+        import base64
+        return base64.b64encode(value).decode('utf-8')
+    elif isinstance(value, (dict, list)):
+        # Recursively serialize nested structures
+        if isinstance(value, dict):
+            return {k: serialize_value(v) for k, v in value.items()}
+        else:
+            return [serialize_value(item) for item in value]
+    else:
+        return value
 
 
 def process_csv_file(file_path: str, table_name: Optional[str] = None) -> Dict:
@@ -112,8 +153,14 @@ def execute_csv_query(file_path: str, query_logic: str) -> List[Dict]:
         result = conn.execute(query_logic).fetchdf()
         conn.close()
         
-        # Convert DataFrame to list of dictionaries
-        return result.to_dict('records')
+        # Convert DataFrame to list of dictionaries and serialize values
+        records = result.to_dict('records')
+        # Serialize all values to ensure JSON compatibility
+        serialized_records = []
+        for record in records:
+            serialized_dict = {k: serialize_value(v) for k, v in record.items()}
+            serialized_records.append(serialized_dict)
+        return serialized_records
     except Exception as e:
         conn.close()
         raise Exception(f"Query execution failed: {str(e)}")

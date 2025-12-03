@@ -27,6 +27,8 @@ export interface DataSourceMetadata {
   source_type: SourceType;
   tables: TableMetadata[];
   file_path?: string; // For CSV_FILE source type
+  connection_string?: string; // For SQL_DB source type
+  data_source_id?: string; // Data source ID for canonical mapping and query translation
 }
 
 export interface AdhocQueryResponse {

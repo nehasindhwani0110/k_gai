@@ -22,33 +22,80 @@ export default function PieChart({ data, title }: PieChartProps) {
     );
   }
 
-  // Generic column detection - works for any multi-tenant application
+  // Improved column detection - check multiple rows for better accuracy
   const keys = Object.keys(data[0] || {});
   
   // Find string columns (names/categories) and numeric columns (values)
+  const sampleSize = Math.min(5, data.length);
   const stringCols = keys.filter(key => {
-    const val = data[0][key];
-    return val !== null && val !== undefined && 
-           typeof val === 'string' && 
-           isNaN(Number(val)) && 
-           val !== '';
+    let stringCount = 0;
+    for (let i = 0; i < sampleSize; i++) {
+      const val = data[i]?.[key];
+      if (val !== null && val !== undefined && 
+          typeof val === 'string' && 
+          isNaN(Number(val)) && 
+          val !== '') {
+        stringCount++;
+      }
+    }
+    return stringCount > sampleSize / 2;
   });
   
   const numericCols = keys.filter(key => {
-    const val = data[0][key];
-    return val !== null && val !== undefined && 
-           (typeof val === 'number' || (!isNaN(Number(val)) && String(val) !== ''));
+    let numericCount = 0;
+    for (let i = 0; i < sampleSize; i++) {
+      const val = data[i]?.[key];
+      if (val !== null && val !== undefined) {
+        if (typeof val === 'number') {
+          numericCount++;
+        } else if (!isNaN(Number(val)) && String(val) !== '') {
+          numericCount++;
+        }
+      }
+    }
+    return numericCount > sampleSize / 2;
   });
   
-  // Smart selection: name = first string column, value = first numeric column
+  // Column name patterns for better detection
+  const namePatterns = ['name', 'category', 'type', 'status', 'group', 'label', 'city', 'country', 'region', 'item'];
+  const valuePatterns = ['count', 'total', 'sum', 'amount', 'value', 'quantity', 'number'];
+  
+  // Smart selection: prefer columns by name patterns
   let nameKey = stringCols.length > 0 ? stringCols[0] : keys[0];
   let valueKey = numericCols.find(k => k !== nameKey) || numericCols[0] || keys[1] || keys[0];
+  
+  // Try to identify by column name patterns
+  const nameKeyByName = keys.find(key => {
+    const lowerKey = key.toLowerCase();
+    return namePatterns.some(p => lowerKey.includes(p)) && (stringCols.includes(key) || !numericCols.includes(key));
+  });
+  const valueKeyByName = keys.find(key => {
+    const lowerKey = key.toLowerCase();
+    return valuePatterns.some(p => lowerKey.includes(p)) && numericCols.includes(key);
+  });
+  
+  if (nameKeyByName) nameKey = nameKeyByName;
+  if (valueKeyByName) valueKey = valueKeyByName;
   
   // If exactly 2 columns, use them directly
   if (keys.length === 2) {
     if (stringCols.length === 1 && numericCols.length === 1) {
       nameKey = stringCols[0];
       valueKey = numericCols[0];
+    } else if (numericCols.length === 2) {
+      // Both numeric - check names
+      const firstLower = keys[0].toLowerCase();
+      const secondLower = keys[1].toLowerCase();
+      if (namePatterns.some(p => firstLower.includes(p))) {
+        nameKey = keys[0];
+        valueKey = keys[1];
+      } else if (namePatterns.some(p => secondLower.includes(p))) {
+        nameKey = keys[1];
+        valueKey = keys[0];
+      } else {
+        nameKey = keys[0];
+        valueKey = keys[1];
+      }
     }
   }
 

@@ -74,28 +74,17 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
       const data: DashboardMetricsResponse = await response.json();
       const allMetrics = data.dashboard_metrics || [];
       
+      console.log(`[DASHBOARD] Received ${allMetrics.length} metrics from API`);
+      
       // Execute queries for all metrics and collect results
-      const metricsWithData: DashboardMetric[] = [];
-      
+      // Show ALL metrics regardless of errors - let users see what's available
       for (const metric of allMetrics) {
-        const result = await executeMetricQuery(metric);
-        
-        // Only include metrics that have data and no errors
-        if (result.hasData && !result.hasError) {
-          metricsWithData.push(metric);
-        }
+        await executeMetricQuery(metric);
       }
       
-      // Update metrics to only include those with data
-      // If we have fewer than 3 metrics with data, keep all and let errors show
-      if (metricsWithData.length >= 3) {
-        setMetrics(metricsWithData);
-        console.log(`[DASHBOARD] Filtered to ${metricsWithData.length} metrics with data out of ${allMetrics.length} total`);
-      } else {
-        // Keep all metrics but they'll show errors if no data
-        setMetrics(allMetrics);
-        console.log(`[DASHBOARD] Only ${metricsWithData.length} metrics have data, showing all ${allMetrics.length} metrics`);
-      }
+      // Always show all metrics - errors will be displayed in the UI
+      setMetrics(allMetrics);
+      console.log(`[DASHBOARD] Displaying all ${allMetrics.length} metrics`);
     } catch (error) {
       console.error('Error:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to load dashboard metrics');
@@ -431,8 +420,22 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
                       sampleData: metricDataArray[0],
                       keys: metricDataArray.length > 0 ? Object.keys(metricDataArray[0]) : [],
                       hasData,
-                      metricData: metricData
+                      metricData: metricData,
+                      query: metric.query_content?.substring(0, 100)
                     });
+                    
+                    // Log any potential data issues
+                    if (metricDataArray.length > 0) {
+                      const firstRow = metricDataArray[0];
+                      const keys = Object.keys(firstRow);
+                      console.log(`[DashboardMetrics] Data structure for ${metric.metric_name}:`, {
+                        columns: keys,
+                        sampleValues: keys.reduce((acc, key) => {
+                          acc[key] = `${typeof firstRow[key]} (${String(firstRow[key]).substring(0, 30)})`;
+                          return acc;
+                        }, {} as Record<string, string>)
+                      });
+                    }
                     
                     // Ensure we have valid data
                     if (!metricDataArray || metricDataArray.length === 0) {

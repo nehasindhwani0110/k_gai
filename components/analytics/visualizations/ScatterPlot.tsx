@@ -25,14 +25,45 @@ export default function ScatterPlot({ data, title }: ScatterPlotProps) {
   let xKey = keys[0] || 'x';
   let yKey = keys[1] || 'y';
 
+  // Improved numeric detection - check multiple rows
+  const sampleSize = Math.min(5, data.length);
   const numericKeys = keys.filter(key => {
-    const val = data[0][key];
-    return typeof val === 'number' || !isNaN(parseFloat(String(val)));
+    let numericCount = 0;
+    for (let i = 0; i < sampleSize; i++) {
+      const val = data[i]?.[key];
+      if (val !== null && val !== undefined) {
+        if (typeof val === 'number') {
+          numericCount++;
+        } else if (!isNaN(parseFloat(String(val))) && String(val) !== '') {
+          numericCount++;
+        }
+      }
+    }
+    return numericCount > sampleSize / 2;
   });
 
+  // Column name patterns for better detection
+  const xPatterns = ['count', 'number', 'item_count', 'x', 'first'];
+  const yPatterns = ['rating', 'score', 'value', 'amount', 'y', 'second', 'avg', 'average'];
+
   if (numericKeys.length >= 2) {
-    xKey = numericKeys[0];
-    yKey = numericKeys[1];
+    // Try to identify by name patterns
+    const xKeyByName = numericKeys.find(key => {
+      const lowerKey = key.toLowerCase();
+      return xPatterns.some(p => lowerKey.includes(p));
+    });
+    const yKeyByName = numericKeys.find(key => {
+      const lowerKey = key.toLowerCase();
+      return yPatterns.some(p => lowerKey.includes(p));
+    });
+    
+    if (xKeyByName && yKeyByName && xKeyByName !== yKeyByName) {
+      xKey = xKeyByName;
+      yKey = yKeyByName;
+    } else {
+      xKey = numericKeys[0];
+      yKey = numericKeys[1];
+    }
   }
 
   // Format data

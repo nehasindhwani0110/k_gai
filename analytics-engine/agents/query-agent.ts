@@ -37,10 +37,21 @@ export class QueryAgent {
       console.log('[QueryAgent] LangSmith tracing enabled - LangChain calls will be traced');
     }
     
+    // CRITICAL: Force use of gpt-4-turbo-preview or gpt-4o for high context (128k tokens)
+    // This prevents context length errors with large schemas
+    const requestedModel = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
+    const model = requestedModel.includes('gpt-4') && !requestedModel.includes('gpt-3.5')
+      ? requestedModel
+      : 'gpt-4-turbo-preview'; // Default to high-context model
+    
+    console.log(`[QueryAgent] Using model: ${model} (requested: ${requestedModel})`);
+    
     this.llm = new ChatOpenAI({
-      modelName: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
+      modelName: model,
       temperature: 0.2,
       openAIApiKey: process.env.OPENAI_API_KEY,
+      timeout: 120000, // 120 seconds timeout
+      maxRetries: 2,
       // LangChain automatically uses LangSmith if env vars are set
     });
   }
@@ -92,28 +103,53 @@ Return ONLY valid JSON (no markdown, no code blocks):
   private async exploreSchema(state: AgentState): Promise<Partial<AgentState>> {
     console.log('[AGENT] Exploring schema');
     
-    // Only explore if we have connection string and it's SQL_DB
-    if (state.metadata.source_type === 'SQL_DB' && state.connection_string) {
-      try {
-        // Get all table names from metadata
-        const allTables = state.metadata.tables.map(t => t.name);
-        
-        // Explore relevant tables based on question
-        const exploredMetadata = await exploreRelevantSchema(
-          state.question,
-          state.connection_string,
-          allTables
-        );
+    // PRIORITY: System catalog first - ALWAYS skip exploration if metadata is already reduced
+    // The metadata passed to agent is already filtered by hybrid-metadata-service
+    // Don't replace it with exploration - it will fetch ALL tables again!
+    const tableCount = state.metadata.tables?.length || 0;
+    const columnCount = state.metadata.tables?.reduce((sum, t) => sum + (t.columns?.length || 0), 0) || 0;
+    
+    // CRITICAL: Check token count to determine if metadata is safe
+    const { estimateMetadataTokens, isMetadataSizeSafe } = await import('../utils/token-counter');
+    const model = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
+    const tokenCount = estimateMetadataTokens(state.metadata, model);
+    const isSafe = isMetadataSizeSafe(state.metadata, model);
+    
+    console.log(`[AGENT] 📊 Metadata check: ${tableCount} tables, ${columnCount} columns, ${tokenCount} tokens (${isSafe ? '✅ Safe' : '❌ Too large'})`);
+    
+    // ALWAYS skip exploration if metadata is already reduced (from system catalog + semantic filtering)
+    // The hybrid-metadata-service already did the work - don't undo it!
+    if (isSafe || tableCount <= 15) {
+      console.log(`[AGENT] ✅ Metadata already optimized (${tableCount} tables, ${tokenCount} tokens) - skipping exploration (system catalog is primary)`);
+      return { step: state.step + 1 };
+    }
+    
+    // CRITICAL: DO NOT explore schema if metadata is already reduced!
+    // The hybrid-metadata-service already did semantic filtering and system catalog fetching
+    // Exploring again will fetch ALL tables from the database, undoing all the optimization!
+    // 
+    // If metadata is still too large, apply aggressive column reduction instead
+    if (!isSafe && state.metadata.source_type === 'SQL_DB') {
+      console.log(`[AGENT] ⚠️ Metadata still too large (${tokenCount} tokens) - applying aggressive column reduction`);
+      
+      // Reduce columns per table instead of fetching more tables
+      const reducedTables = state.metadata.tables.map(table => ({
+        ...table,
+        columns: table.columns?.slice(0, 10) || [], // Keep only top 10 columns per table
+      }));
+      
+      const reducedMetadata: DataSourceMetadata = {
+        ...state.metadata,
+        tables: reducedTables,
+      };
+      
+      const reducedTokenCount = estimateMetadataTokens(reducedMetadata, model);
+      console.log(`[AGENT] ✅ Column reduction: ${tokenCount} → ${reducedTokenCount} tokens`);
         
         return {
-          metadata: exploredMetadata,
+        metadata: reducedMetadata,
           step: state.step + 1,
         };
-      } catch (error) {
-        console.warn('[AGENT] Schema exploration failed, using existing metadata:', error);
-        // Continue with existing metadata
-        return { step: state.step + 1 };
-      }
     }
     
     // For CSV files or if no connection string, skip exploration
@@ -124,29 +160,55 @@ Return ONLY valid JSON (no markdown, no code blocks):
     console.log('[AGENT] Generating SQL query');
     
     try {
+      // Log metadata size for debugging
+      const metadataSize = JSON.stringify(state.metadata).length;
+      const tableCount = state.metadata.tables?.length || 0;
+      const columnCount = state.metadata.tables?.reduce((sum, t) => sum + (t.columns?.length || 0), 0) || 0;
+      console.log(`[AGENT] 📊 Metadata: ${tableCount} tables, ${columnCount} columns, ${(metadataSize / 1024).toFixed(1)}KB`);
+      
+      // CRITICAL: Use ACTUAL database table/column names (not canonical names)
+      // The metadata from system catalog already has actual names - use them directly
+      const schemaDescription = state.metadata.tables?.map(table => {
+        const columns = table.columns?.map(col => 
+          `  - ${col.name} (${col.type || 'unknown'})${col.description ? ` - ${col.description}` : ''}`
+        ).join('\n') || '  (no columns)';
+        return `Table: ${table.name}${table.description ? ` - ${table.description}` : ''}\n${columns}`;
+      }).join('\n\n') || 'No tables available';
+      
       const prompt = `Generate a SQL query that answers this question: "${state.question}"
 
-Schema:
-${JSON.stringify(state.metadata, null, 2)}
+Database Schema (USE EXACT TABLE AND COLUMN NAMES AS SHOWN):
+${schemaDescription}
 
-Requirements:
-1. Use exact table and column names from schema
-2. Only generate SELECT queries (no INSERT, UPDATE, DELETE)
-3. Use proper SQL syntax
-4. Include appropriate WHERE, GROUP BY, ORDER BY, LIMIT clauses as needed
-5. CRITICAL - MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If a column is needed but cannot be grouped, wrap it in MIN() or MAX() aggregate function.
+CRITICAL REQUIREMENTS:
+1. Use EXACT table and column names from the schema above (case-sensitive)
+2. DO NOT use canonical names or translated names - use the actual database names
+3. Only generate SELECT queries (no INSERT, UPDATE, DELETE, DROP, ALTER)
+4. Use proper SQL syntax for MySQL
+5. Include appropriate WHERE, GROUP BY, ORDER BY, LIMIT clauses as needed
+6. CRITICAL - MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause
+7. If a column is needed but cannot be grouped, wrap it in MIN() or MAX() aggregate function
 
-CRITICAL - Question Intent Analysis:
-- If question mentions "differences", "difference", "compare", "comparison", "versus", "vs", "measure differences":
-  → Group by ALL dimensions mentioned in the question
-  → Calculate metrics (COUNT, AVG, SUM) for each combination
-  → Example: "differences between X and Y by Z" → GROUP BY Z, X_or_Y_column
-  → Example: "income bracket differences between parties" → GROUP BY income_bracket, party_affiliation
-- This enables visual comparison in charts by showing metrics for each combination
+Question Intent Analysis:
+- If question asks for "all classes", "show classes", "list classes" → Use table named "class" or similar
+- If question mentions "differences", "compare", "versus" → Group by ALL dimensions mentioned
+- Calculate metrics (COUNT, AVG, SUM) for each combination when comparing
 
-Return ONLY the SQL query, no explanations:`;
+Return ONLY the SQL query, no explanations, no markdown, no code blocks:`;
 
-      const response = await this.llm.invoke(prompt);
+      console.log('[AGENT] 🤖 Calling LLM for query generation...');
+      const startTime = Date.now();
+      
+      // Add timeout wrapper for LLM call
+      const llmPromise = this.llm.invoke(prompt);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('LLM call timed out after 120 seconds')), 120000)
+      );
+      
+      const response = await Promise.race([llmPromise, timeoutPromise]) as any;
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[AGENT] ✅ LLM response received (${elapsed}s)`);
+      
       const query = typeof response.content === 'string' 
         ? response.content.trim() 
         : JSON.stringify(response.content).trim();
@@ -154,23 +216,28 @@ Return ONLY the SQL query, no explanations:`;
       // Clean up query (remove markdown code blocks if present)
       const cleanQuery = query.replace(/^```sql\s*/i, '').replace(/```\s*$/, '').trim();
       
+      console.log(`[AGENT] ✅ Query generated: ${cleanQuery.substring(0, 100)}${cleanQuery.length > 100 ? '...' : ''}`);
+      
       return {
         query: cleanQuery,
         step: state.step + 1,
       };
     } catch (error) {
-      console.error('[AGENT] Query generation error:', error);
+      console.error('[AGENT] ❌ Query generation error:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('[AGENT] Error details:', errorMessage);
       return {
-        error: `Query generation failed: ${error instanceof Error ? error.message : String(error)}`,
+        error: `Query generation failed: ${errorMessage}`,
         step: state.step + 1,
       };
     }
   }
 
   private async validateQuery(state: AgentState): Promise<Partial<AgentState>> {
-    console.log('[AGENT] Validating query');
+    console.log('[AGENT] 🔍 Validating query');
     
     if (!state.query) {
+      console.log('[AGENT] ⚠️ No query to validate');
       return {
         validation_result: {
           valid: false,
@@ -182,9 +249,11 @@ Return ONLY the SQL query, no explanations:`;
 
     try {
       // Security validation
+      console.log('[AGENT] 🔒 Running security validation...');
       const isValid = validateSQLQuery(state.query);
       
       if (!isValid) {
+        console.log('[AGENT] ❌ Query failed security validation');
         return {
           validation_result: {
             valid: false,
@@ -194,8 +263,10 @@ Return ONLY the SQL query, no explanations:`;
           step: state.step + 1,
         };
       }
+      console.log('[AGENT] ✅ Security validation passed');
 
       // Semantic validation using LLM
+      console.log('[AGENT] 🤖 Running semantic validation with LLM...');
       const validationPrompt = `Validate this SQL query:
 
 Question: ${state.question}
@@ -215,7 +286,15 @@ Return JSON:
   "suggestions": "improvement suggestions"
 }`;
 
-      const response = await this.llm.invoke(validationPrompt);
+      const startTime = Date.now();
+      const llmPromise = this.llm.invoke(validationPrompt);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Validation LLM call timed out after 60 seconds')), 60000)
+      );
+      
+      const response = await Promise.race([llmPromise, timeoutPromise]) as any;
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[AGENT] ✅ Validation LLM response received (${elapsed}s)`);
       const content = typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
       const validation = JSON.parse(content);
 
@@ -285,51 +364,79 @@ Return JSON:
   async execute(
     question: string,
     metadata: DataSourceMetadata,
-    connectionString?: string
+    connectionString?: string,
+    questionUnderstanding?: {
+      intent: string;
+      keyConcepts: string[];
+      entities: string[];
+      queryType: string;
+      semanticSummary: string;
+    }
   ): Promise<string> {
+    // Enhance question with semantic understanding if provided
+    const enhancedQuestion = questionUnderstanding
+      ? `${question}\n\nSemantic Understanding:\n- Intent: ${questionUnderstanding.intent}\n- Query Type: ${questionUnderstanding.queryType}\n- Key Concepts: ${questionUnderstanding.keyConcepts.join(', ')}\n- Entities: ${questionUnderstanding.entities.join(', ')}\n- Semantic Summary: ${questionUnderstanding.semanticSummary}`
+      : question;
+    
     let state: AgentState = {
-      question,
+      question: enhancedQuestion,
       metadata,
       step: 0,
       connection_string: connectionString,
     };
 
     try {
+      console.log('[AGENT] 🚀 Starting agent workflow...');
+      
       // Step 1: Analyze question
+      console.log('[AGENT] 📝 Step 1/5: Analyzing question...');
       state = { ...state, ...(await this.analyzeQuestion(state)) };
+      console.log('[AGENT] ✅ Step 1 complete');
 
       // Step 2: Explore schema if needed
+      console.log('[AGENT] 🔎 Step 2/5: Exploring schema...');
       state = { ...state, ...(await this.exploreSchema(state)) };
+      console.log('[AGENT] ✅ Step 2 complete');
 
       // Step 3: Generate query
+      console.log('[AGENT] ⚙️ Step 3/5: Generating query...');
       state = { ...state, ...(await this.generateQuery(state)) };
+      console.log('[AGENT] ✅ Step 3 complete');
 
       if (state.error) {
         throw new Error(state.error);
       }
 
       // Step 4: Validate query
+      console.log('[AGENT] ✔️ Step 4/5: Validating query...');
       state = { ...state, ...(await this.validateQuery(state)) };
+      console.log('[AGENT] ✅ Step 4 complete');
 
       // Step 5: Refine if needed (max 3 attempts)
+      console.log('[AGENT] 🔄 Step 5/5: Checking if refinement needed...');
       let refinementAttempts = 0;
       const maxRefinements = 3;
 
       while (!state.validation_result?.valid && refinementAttempts < maxRefinements) {
         if (this.shouldRefine(state) === 'done') {
+          console.log('[AGENT] ✅ Refinement not needed');
           break;
         }
 
+        console.log(`[AGENT] 🔧 Refining query (attempt ${refinementAttempts + 1}/${maxRefinements})...`);
         state = { ...state, ...(await this.refineQuery(state)) };
         state = { ...state, ...(await this.generateQuery(state)) };
         state = { ...state, ...(await this.validateQuery(state)) };
         refinementAttempts++;
+        console.log(`[AGENT] ✅ Refinement attempt ${refinementAttempts} complete`);
       }
 
       if (!state.query) {
         throw new Error('No query generated after agent execution');
       }
 
+      console.log('[AGENT] ✅ Agent workflow complete!');
+      console.log(`[AGENT] 📋 Final query: ${state.query.substring(0, 150)}${state.query.length > 150 ? '...' : ''}`);
       return state.query;
     } catch (error) {
       console.error('[AGENT] Agent execution error:', error);

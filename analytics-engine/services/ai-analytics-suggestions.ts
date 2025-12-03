@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { DataSourceMetadata } from '../types';
 import { createTracedOpenAI } from '../utils/langsmith-tracer';
+import { estimateMetadataTokens, isMetadataSizeSafe, getSafePromptSize } from '../utils/token-counter';
 
 // Initialize traced OpenAI client
 const openai = createTracedOpenAI();
@@ -62,16 +63,74 @@ async function identifyKeyTablesForSuggestions(
 }
 
 /**
- * Creates reduced metadata with only selected tables
+ * Creates reduced metadata with only selected tables and limited columns
+ * This prevents context length errors by aggressively reducing metadata size
  */
 function createReducedMetadata(
   metadata: DataSourceMetadata,
-  selectedTables: string[]
+  selectedTables: string[],
+  maxColumnsPerTable: number = 15
 ): DataSourceMetadata {
   return {
     ...metadata,
-    tables: metadata.tables.filter(table => selectedTables.includes(table.name))
+    tables: metadata.tables
+      .filter(table => selectedTables.includes(table.name))
+      .map(table => ({
+        ...table,
+        columns: table.columns.slice(0, maxColumnsPerTable), // Limit columns per table
+      }))
   };
+}
+
+/**
+ * Aggressively reduces metadata to fit within token limits
+ * Used when normal reduction still results in context length errors
+ */
+function applyAggressiveReduction(
+  metadata: DataSourceMetadata,
+  model: string = 'gpt-4-turbo-preview'
+): DataSourceMetadata {
+  const { estimateMetadataTokens, isMetadataSizeSafe } = require('../utils/token-counter');
+  
+  console.log('[AI-SUGGESTIONS] 🔧 Applying aggressive metadata reduction...');
+  
+  // Start with 5 tables, 10 columns each
+  let reduced: DataSourceMetadata = {
+    ...metadata,
+    tables: metadata.tables.slice(0, 5).map(table => ({
+      ...table,
+      columns: table.columns.slice(0, 10),
+    })),
+  };
+  
+  // If still too large, reduce to 3 tables, 8 columns each
+  if (!isMetadataSizeSafe(reduced, model)) {
+    console.log('[AI-SUGGESTIONS] 🔧 Still too large, reducing to 3 tables, 8 columns...');
+    reduced = {
+      ...metadata,
+      tables: metadata.tables.slice(0, 3).map(table => ({
+        ...table,
+        columns: table.columns.slice(0, 8),
+      })),
+    };
+  }
+  
+  // If still too large, reduce to 2 tables, 6 columns each
+  if (!isMetadataSizeSafe(reduced, model)) {
+    console.log('[AI-SUGGESTIONS] 🔧 Still too large, reducing to 2 tables, 6 columns...');
+    reduced = {
+      ...metadata,
+      tables: metadata.tables.slice(0, 2).map(table => ({
+        ...table,
+        columns: table.columns.slice(0, 6),
+      })),
+    };
+  }
+  
+  const tokens = estimateMetadataTokens(reduced, model);
+  console.log(`[AI-SUGGESTIONS] ✅ Aggressive reduction complete: ${reduced.tables.length} tables, ${tokens} tokens`);
+  
+  return reduced;
 }
 
 interface AnalyticsSuggestion {
@@ -196,17 +255,68 @@ Full Metadata:`;
 export async function generateAnalyticsSuggestions(
   metadata: DataSourceMetadata
 ): Promise<AnalyticsSuggestionsResponse> {
-  // Extract schema summary for better context
-  const schemaSummary = extractSchemaSummary(metadata);
+  // Force use of gpt-4-turbo-preview or gpt-4o for suggestions (128k context)
+  // This prevents context length errors with large schemas
+  const requestedModel = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
+  const model = requestedModel.includes('gpt-4') && !requestedModel.includes('gpt-3.5')
+    ? requestedModel
+    : 'gpt-4-turbo-preview'; // Default to high-context model for suggestions
   
-  const fullMetadata = JSON.stringify(metadata, null, 2);
+  // Check token count BEFORE generating prompt
+  const metadataTokens = estimateMetadataTokens(metadata, model);
+  const safeSize = getSafePromptSize(model);
+  const isSafe = isMetadataSizeSafe(metadata, model);
+  
+  console.log(`[AI-SUGGESTIONS] 📊 Metadata size: ${metadataTokens} tokens, Safe limit: ${safeSize} tokens (${isSafe ? '✅ Safe' : '❌ Too large'})`);
+  
+  // If metadata is too large, apply aggressive reduction
+  let finalMetadata = metadata;
+  if (!isSafe) {
+    console.log(`[AI-SUGGESTIONS] ⚠️ Metadata too large (${metadataTokens} tokens), applying aggressive reduction...`);
+    finalMetadata = applyAggressiveReduction(metadata, model);
+    
+    // Verify it's safe now
+    const finalTokens = estimateMetadataTokens(finalMetadata, model);
+    const finalIsSafe = isMetadataSizeSafe(finalMetadata, model);
+    console.log(`[AI-SUGGESTIONS] ✅ Reduced to ${finalTokens} tokens (${finalIsSafe ? '✅ Safe' : '⚠️ Still large'})`);
+    
+    // If still too large after aggressive reduction, use minimal metadata
+    if (!finalIsSafe) {
+      console.log(`[AI-SUGGESTIONS] ⚠️ Still too large, using minimal metadata (2 tables, 5 columns each)...`);
+      finalMetadata = {
+        ...metadata,
+        tables: metadata.tables.slice(0, 2).map(table => ({
+          ...table,
+          columns: table.columns.slice(0, 5),
+        })),
+      };
+    }
+  }
+  
+  // Extract schema summary for better context
+  const schemaSummary = extractSchemaSummary(finalMetadata);
+  
+  // Use compact JSON format to reduce token usage
+  const fullMetadata = JSON.stringify(finalMetadata);
   const prompt = ANALYTICS_SUGGESTIONS_PROMPT.replace(
     '{DATA_SOURCE_METADATA}',
     `${schemaSummary}\n${fullMetadata}`
   );
 
+  // Verify prompt size before sending
+  const promptTokens = estimateMetadataTokens({ prompt }, model);
+  console.log(`[AI-SUGGESTIONS] 📊 Final prompt size: ~${promptTokens} tokens`);
+
+  // Ensure we're using a model with sufficient context length
+  // gpt-4-turbo-preview supports 128k tokens, but if model is gpt-3.5-turbo (16k), we need more reduction
+  const effectiveModel = model.includes('gpt-4') || model.includes('turbo-preview') || model.includes('gpt-4o') 
+    ? model 
+    : 'gpt-4-turbo-preview'; // Default to gpt-4-turbo-preview for large contexts
+  
+  console.log(`[AI-SUGGESTIONS] Using model: ${effectiveModel} (requested: ${model})`);
+
   const response = await openai.chat.completions.create({
-    model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
+    model: effectiveModel,
     messages: [
       {
         role: 'system',
@@ -238,7 +348,13 @@ Always return valid JSON only.`,
     throw new Error('No response from LLM');
   }
 
-  return JSON.parse(content) as AnalyticsSuggestionsResponse;
+  try {
+    return JSON.parse(content) as AnalyticsSuggestionsResponse;
+  } catch (parseError) {
+    console.error('[AI-SUGGESTIONS] ❌ JSON parse error:', parseError);
+    console.error('[AI-SUGGESTIONS] Response content:', content.substring(0, 500));
+    throw new Error(`Failed to parse LLM response as JSON: ${parseError instanceof Error ? parseError.message : String(parseError)}`);
+  }
 }
 
 /**
@@ -279,35 +395,63 @@ export async function generateAnalyticsSuggestionsWithAgent(
     
     // For other cases or if schema exploration fails, use table selection
     const allTables = metadata.tables.map(t => t.name);
+    const totalColumns = metadata.tables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
     
-    if (allTables.length > 10) {
-      console.log(`[AI-SUGGESTIONS] Large database detected (${allTables.length} tables), selecting key tables`);
+    // Always reduce metadata for large databases or many columns
+    if (allTables.length > 5 || totalColumns > 50) {
+      const maxTables = allTables.length > 20 ? 5 : allTables.length > 10 ? 8 : 10;
+      console.log(`[AI-SUGGESTIONS] Large database detected (${allTables.length} tables, ${totalColumns} columns), selecting top ${maxTables} key tables`);
       
       // Identify key tables
-      const keyTables = await identifyKeyTablesForSuggestions(metadata, 10);
+      const keyTables = await identifyKeyTablesForSuggestions(metadata, maxTables);
       
-      // Create reduced metadata
-      const reducedMetadata = createReducedMetadata(metadata, keyTables);
+      // Create reduced metadata with column limits
+      // Limit columns per table based on total column count
+      const maxColumnsPerTable = totalColumns > 200 ? 10 : totalColumns > 100 ? 12 : 15;
+      const reducedMetadata = createReducedMetadata(metadata, keyTables, maxColumnsPerTable);
       
-      console.log(`[AI-SUGGESTIONS] Using reduced metadata with ${reducedMetadata.tables.length} tables`);
+      console.log(`[AI-SUGGESTIONS] Using reduced metadata: ${reducedMetadata.tables.length} tables, max ${maxColumnsPerTable} columns per table`);
       return await generateAnalyticsSuggestions(reducedMetadata);
     }
     
-    // For smaller databases, use original metadata
+    // For smaller databases, use original metadata (but still check token count)
     console.log('[AI-SUGGESTIONS] Using full metadata for suggestions');
     return await generateAnalyticsSuggestions(metadata);
     
   } catch (error) {
     console.error('[AI-SUGGESTIONS] Agent-based suggestions failed, falling back to direct LLM:', error);
+    
+    // Check if error is context length related
+    const isContextLengthError = error instanceof Error && 
+      (error.message.includes('context length') || 
+       error.message.includes('context_length_exceeded') ||
+       error.message.includes('maximum context length'));
+    
+    if (isContextLengthError) {
+      console.log('[AI-SUGGESTIONS] ⚠️ Context length error detected, applying aggressive reduction...');
+      // Apply very aggressive reduction
+      const aggressiveMetadata = applyAggressiveReduction(metadata);
+      return await generateAnalyticsSuggestions(aggressiveMetadata);
+    }
+    
     // Fallback: try with reduced metadata if original fails
     try {
-      const keyTables = await identifyKeyTablesForSuggestions(metadata, 8);
-      const reducedMetadata = createReducedMetadata(metadata, keyTables);
+      const keyTables = await identifyKeyTablesForSuggestions(metadata, 5);
+      const reducedMetadata = createReducedMetadata(metadata, keyTables, 10); // 5 tables, 10 columns each
       return await generateAnalyticsSuggestions(reducedMetadata);
     } catch (fallbackError) {
-      console.error('[AI-SUGGESTIONS] Fallback also failed, using original method:', fallbackError);
-      // Last resort: use original method (may fail with very large databases)
-      return await generateAnalyticsSuggestions(metadata);
+      console.error('[AI-SUGGESTIONS] Fallback also failed:', fallbackError);
+      
+      // Last resort: use minimal metadata (2 tables, 5 columns each)
+      console.log('[AI-SUGGESTIONS] ⚠️ Using minimal metadata as last resort...');
+      const minimalMetadata: DataSourceMetadata = {
+        ...metadata,
+        tables: metadata.tables.slice(0, 2).map(table => ({
+          ...table,
+          columns: table.columns.slice(0, 5),
+        })),
+      };
+      return await generateAnalyticsSuggestions(minimalMetadata);
     }
   }
 }

@@ -32,14 +32,55 @@ export interface FileMetadataInput {
  */
 export async function saveQueryHistory(input: QueryHistoryInput): Promise<void> {
   try {
+    // Limit results stored to prevent database column size issues
+    // Store summary for large result sets (first 100 rows + metadata)
+    let resultsToStore: string | null = null;
+    if (input.results && input.results.length > 0) {
+      const MAX_ROWS_TO_STORE = 100;
+      const MAX_RESULT_SIZE = 50000; // ~50KB limit for JSON string
+      
+      if (input.results.length <= MAX_ROWS_TO_STORE) {
+        // Small result set - store everything
+        resultsToStore = JSON.stringify(input.results);
+      } else {
+        // Large result set - store summary
+        const summary = {
+          totalRows: input.results.length,
+          sampleRows: input.results.slice(0, MAX_ROWS_TO_STORE),
+          truncated: true,
+        };
+        resultsToStore = JSON.stringify(summary);
+      }
+      
+      // If still too large, truncate further
+      if (resultsToStore.length > MAX_RESULT_SIZE) {
+        const truncatedSample = input.results.slice(0, 50);
+        resultsToStore = JSON.stringify({
+          totalRows: input.results.length,
+          sampleRows: truncatedSample,
+          truncated: true,
+          note: 'Results truncated due to size limits',
+        });
+      }
+    }
+    
+    // Truncate queryContent if too long (MySQL TEXT can hold ~65KB, but we'll be safe)
+    // This is a safety measure - TEXT should handle most queries, but very long ones might need truncation
+    const MAX_QUERY_CONTENT_SIZE = 60000; // ~60KB limit
+    let queryContentToStore = input.queryContent;
+    if (queryContentToStore.length > MAX_QUERY_CONTENT_SIZE) {
+      console.warn(`Query content too long (${queryContentToStore.length} chars), truncating to ${MAX_QUERY_CONTENT_SIZE}`);
+      queryContentToStore = queryContentToStore.substring(0, MAX_QUERY_CONTENT_SIZE) + '\n... [truncated]';
+    }
+    
     await prisma.queryHistory.create({
       data: {
         userQuestion: input.userQuestion,
         queryType: input.queryType,
-        queryContent: input.queryContent,
+        queryContent: queryContentToStore,
         sourceType: input.sourceType,
         filePath: input.filePath || null,
-        results: input.results ? JSON.stringify(input.results) : null,
+        results: resultsToStore,
       },
     });
   } catch (error) {
@@ -132,12 +173,27 @@ export async function clearQueryHistory(): Promise<boolean> {
  */
 export async function saveDashboardMetric(input: DashboardMetricInput): Promise<void> {
   try {
+    // Truncate long content as safety measure
+    const MAX_CONTENT_SIZE = 60000; // ~60KB limit
+    let queryContentToStore = input.queryContent;
+    let insightSummaryToStore = input.insightSummary;
+    
+    if (queryContentToStore.length > MAX_CONTENT_SIZE) {
+      console.warn(`Query content too long (${queryContentToStore.length} chars), truncating`);
+      queryContentToStore = queryContentToStore.substring(0, MAX_CONTENT_SIZE) + '\n... [truncated]';
+    }
+    
+    if (insightSummaryToStore.length > MAX_CONTENT_SIZE) {
+      console.warn(`Insight summary too long (${insightSummaryToStore.length} chars), truncating`);
+      insightSummaryToStore = insightSummaryToStore.substring(0, MAX_CONTENT_SIZE) + '\n... [truncated]';
+    }
+    
     await prisma.dashboardMetric.create({
       data: {
         metricName: input.metricName,
-        queryContent: input.queryContent,
+        queryContent: queryContentToStore,
         visualizationType: input.visualizationType,
-        insightSummary: input.insightSummary,
+        insightSummary: insightSummaryToStore,
         sourceType: input.sourceType,
         filePath: input.filePath || null,
       },

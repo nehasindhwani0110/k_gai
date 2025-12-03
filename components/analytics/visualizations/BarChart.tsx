@@ -80,48 +80,105 @@ export default function BarChart({ data, title }: BarChartProps) {
   let chartData = data;
   const keys = Object.keys(data[0] || {});
   
-  // Generic column detection - works for any multi-tenant application
+  // Improved column detection - check multiple rows for better accuracy
   // Find string columns (categories) and numeric columns (values)
   const stringCols = keys.filter(key => {
-    const val = data[0][key];
-    return val !== null && val !== undefined && 
+    // Check first 5 rows (or all if less than 5) to determine type
+    const sampleSize = Math.min(5, data.length);
+    let stringCount = 0;
+    for (let i = 0; i < sampleSize; i++) {
+      const val = data[i]?.[key];
+      if (val !== null && val !== undefined && 
            typeof val === 'string' && 
            isNaN(Number(val)) && 
-           val !== '';
+          val !== '') {
+        stringCount++;
+      }
+    }
+    // Column is string if majority of samples are strings
+    return stringCount > sampleSize / 2;
   });
   
   const numericCols = keys.filter(key => {
-    const val = data[0][key];
-    return val !== null && val !== undefined && 
-           (typeof val === 'number' || (!isNaN(Number(val)) && String(val) !== ''));
+    // Check first 5 rows (or all if less than 5) to determine type
+    const sampleSize = Math.min(5, data.length);
+    let numericCount = 0;
+    for (let i = 0; i < sampleSize; i++) {
+      const val = data[i]?.[key];
+      if (val !== null && val !== undefined) {
+        if (typeof val === 'number') {
+          numericCount++;
+        } else if (!isNaN(Number(val)) && String(val) !== '') {
+          numericCount++;
+        }
+      }
+    }
+    // Column is numeric if majority of samples are numeric
+    return numericCount > sampleSize / 2;
   });
   
-  // Check for date/time columns
+  // Check for date/time columns by name and content
   const timeKey = keys.find(key => {
     const lowerKey = key.toLowerCase();
-    return /date|time|year|month|day|week|quarter|created|updated/i.test(lowerKey);
+    const isTimeByName = /date|time|year|month|day|week|quarter|created|updated|period/i.test(lowerKey);
+    if (isTimeByName) return true;
+    // Also check if values look like dates
+    const sampleVal = data[0]?.[key];
+    if (sampleVal && typeof sampleVal === 'string') {
+      return /^\d{4}-\d{2}-\d{2}|^\d{2}\/\d{2}\/\d{4}/.test(sampleVal);
+    }
+    return false;
   });
   
-  // Smart column selection:
-  // 1. Category = first string column (or first column if no strings)
-  // 2. Value = first numeric column that's not the category
+  // Smart column selection based on column names and types
+  // Value column patterns (aggregations, metrics)
+  const valuePatterns = ['count', 'total', 'sum', 'avg', 'average', 'mean', 'max', 'min', 'amount', 'value', 'score', 'rating', 'attendance', 'content', 'quantity'];
+  // Category column patterns (dimensions, groups)
+  const categoryPatterns = ['name', 'category', 'type', 'status', 'group', 'label', 'city', 'country', 'region', 'item'];
+  
   let categoryKey = stringCols.length > 0 ? stringCols[0] : keys[0];
   let valueKey = numericCols.find(k => k !== categoryKey) || numericCols[0] || keys[1] || keys[0];
   
   // Prefer date/time column as category if available
   if (timeKey) {
     categoryKey = timeKey;
+    // Find value column excluding the time key
+    valueKey = numericCols.find(k => k !== timeKey) || numericCols[0] || keys.find(k => k !== timeKey) || keys[1];
+  } else {
+    // Try to identify by column name patterns
+    const valueKeyByName = keys.find(key => {
+      const lowerKey = key.toLowerCase();
+      return valuePatterns.some(p => lowerKey.includes(p)) && numericCols.includes(key);
+    });
+    const categoryKeyByName = keys.find(key => {
+      const lowerKey = key.toLowerCase();
+      return categoryPatterns.some(p => lowerKey.includes(p)) && (stringCols.includes(key) || key === timeKey);
+    });
+    
+    if (valueKeyByName) valueKey = valueKeyByName;
+    if (categoryKeyByName) categoryKey = categoryKeyByName;
   }
   
-  // If we have exactly 2 columns and one is numeric, use them
+  // If we have exactly 2 columns, use them intelligently
   if (keys.length === 2) {
     if (numericCols.length === 1 && stringCols.length === 1) {
       categoryKey = stringCols[0];
       valueKey = numericCols[0];
     } else if (numericCols.length === 2) {
-      // Both numeric - use first as category, second as value
-      categoryKey = numericCols[0];
-      valueKey = numericCols[1];
+      // Both numeric - check names to determine which is category vs value
+      const firstLower = keys[0].toLowerCase();
+      const secondLower = keys[1].toLowerCase();
+      if (categoryPatterns.some(p => firstLower.includes(p))) {
+        categoryKey = keys[0];
+        valueKey = keys[1];
+      } else if (categoryPatterns.some(p => secondLower.includes(p))) {
+        categoryKey = keys[1];
+        valueKey = keys[0];
+      } else {
+        // Default: first as category, second as value
+        categoryKey = keys[0];
+        valueKey = keys[1];
+      }
     }
   }
   
@@ -145,6 +202,17 @@ export default function BarChart({ data, title }: BarChartProps) {
   if (!valueKey || !keys.includes(valueKey) || valueKey === categoryKey) {
     valueKey = keys.find(k => k !== categoryKey && numericCols.includes(k)) || keys[1] || 'value';
   }
+  
+  // Debug logging for column detection
+  console.log(`[BarChart] Column detection for "${title}":`, {
+    allKeys: keys,
+    categoryKey,
+    valueKey,
+    stringCols,
+    numericCols,
+    timeKey,
+    sampleData: data[0]
+  });
   
   // Format data properly
   chartData = data.map((item, index) => {

@@ -6,8 +6,46 @@ Executes SQL queries on databases and CSV files
 from sqlalchemy import create_engine, text
 from typing import List, Dict, Any
 import pandas as pd
+from datetime import datetime, date, time, timedelta
+from decimal import Decimal
 from csv_processor import execute_csv_query
 from schema_introspection import _normalize_connection_string
+
+
+def serialize_value(value: Any) -> Any:
+    """
+    Convert Python objects to JSON-serializable types.
+    
+    Handles:
+    - datetime, date, time -> ISO format strings
+    - timedelta -> total seconds (float)
+    - Decimal -> float
+    - bytes -> base64 encoded string
+    - Other types -> as-is
+    """
+    if value is None:
+        return None
+    elif isinstance(value, datetime):
+        return value.isoformat()
+    elif isinstance(value, date):
+        return value.isoformat()
+    elif isinstance(value, time):
+        return value.isoformat()
+    elif isinstance(value, timedelta):
+        return value.total_seconds()
+    elif isinstance(value, Decimal):
+        return float(value)
+    elif isinstance(value, bytes):
+        import base64
+        return base64.b64encode(value).decode('utf-8')
+    elif isinstance(value, (dict, list)):
+        # Recursively serialize nested structures
+        if isinstance(value, dict):
+            return {k: serialize_value(v) for k, v in value.items()}
+        else:
+            return [serialize_value(item) for item in value]
+    else:
+        return value
 
 
 def execute_sql_query(connection_string: str, query: str) -> List[Dict]:
@@ -35,9 +73,15 @@ def execute_sql_query(connection_string: str, query: str) -> List[Dict]:
             result = conn.execute(text(query))
             rows = result.fetchall()
             
-            # Convert to list of dictionaries
+            # Convert to list of dictionaries and serialize values
             columns = result.keys()
-            return [dict(zip(columns, row)) for row in rows]
+            serialized_rows = []
+            for row in rows:
+                row_dict = dict(zip(columns, row))
+                # Serialize all values to ensure JSON compatibility
+                serialized_dict = {k: serialize_value(v) for k, v in row_dict.items()}
+                serialized_rows.append(serialized_dict)
+            return serialized_rows
     except Exception as e:
         # Capture detailed error information
         error_message = str(e)

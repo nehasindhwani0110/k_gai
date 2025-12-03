@@ -12,6 +12,7 @@
     "prisma:seed": "tsx prisma/seed.ts",
     "create:realestate": "tsx scripts/create_realestate_tenant.ts",
     "test:realestate": "tsx scripts/test_realestate_tenant.ts",
+    "test:redis": "powershell -ExecutionPolicy Bypass -File scripts/test-redis-connection.ps1",
     "python:backend": "cd analytics-engine/python-backend && python api_server.py",
     "python:install": "cd analytics-engine/python-backend && pip install -r requirements.txt"
   },
@@ -19,6 +20,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@langchain/community": "^0.0.20",
     "@langchain/core": "^0.1.0",
     "@langchain/langgraph": "^0.0.20",
@@ -29,15 +31,19 @@
     "csv-parse": "^5.5.3",
     "langchain": "^0.1.0",
     "langsmith": "^0.3.82",
+    "lru-cache": "^10.4.3",
     "mysql2": "^3.15.3",
     "next": "^14.0.0",
     "openai": "^4.20.0",
+    "p-limit": "^5.0.0",
     "papaparse": "^5.5.3",
     "prisma": "^5.7.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-hot-toast": "^2.4.1",
     "recharts": "^2.10.3",
+    "redis": "^4.7.1",
+    "tiktoken": "^1.0.22",
     "xlsx": "^0.18.5",
     "zod": "^3.22.4"
   },

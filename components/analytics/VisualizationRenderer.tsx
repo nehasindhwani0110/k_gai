@@ -50,6 +50,23 @@ export default function VisualizationRenderer({
   const props = { data, title };
 
   try {
+    // Validate data before rendering
+    if (!data || !Array.isArray(data) || data.length === 0) {
+      console.warn(`[VisualizationRenderer] Empty or invalid data for ${type}`);
+      return (
+        <div className="w-full h-[400px] flex flex-col items-center justify-center bg-yellow-50 rounded-lg border border-yellow-200">
+          <p className="text-yellow-600 font-medium mb-2">No Data Available</p>
+          <p className="text-yellow-500 text-sm">The query returned no results</p>
+        </div>
+      );
+    }
+
+    // Log what we're rendering
+    console.log(`[VisualizationRenderer] Rendering ${type} with ${data.length} rows`, {
+      columns: Object.keys(data[0] || {}),
+      sampleRow: data[0]
+    });
+
     switch (type) {
       case 'bar_chart':
         return <BarChart {...props} />;
@@ -69,13 +86,20 @@ export default function VisualizationRenderer({
         console.warn(`[VisualizationRenderer] Unknown visualization type: ${type}, defaulting to table`);
         return <Table {...props} />;
     }
-  } catch (error) {
-    console.error('[VisualizationRenderer] Error rendering visualization:', error, { type, dataLength: data.length, sampleData: data[0] });
+  } catch (error: any) {
+    console.error('[VisualizationRenderer] Error rendering visualization:', error, { 
+      type, 
+      dataLength: data?.length, 
+      sampleData: data?.[0],
+      errorMessage: error?.message,
+      errorStack: error?.stack
+    });
     return (
-      <div className="w-full h-[400px] flex flex-col items-center justify-center bg-red-50 rounded-lg border border-red-200">
+      <div className="w-full h-[400px] flex flex-col items-center justify-center bg-red-50 rounded-lg border border-red-200 p-4">
         <p className="text-red-600 font-medium mb-2">Visualization Error</p>
-        <p className="text-red-500 text-sm">Type: {type}</p>
-        <p className="text-red-500 text-xs mt-1">Check console for details</p>
+        <p className="text-red-500 text-sm mb-1">Type: {type}</p>
+        <p className="text-red-500 text-xs mb-2">{error?.message || 'Unknown error'}</p>
+        <p className="text-red-400 text-xs mt-1">Check browser console for details</p>
       </div>
     );
   }

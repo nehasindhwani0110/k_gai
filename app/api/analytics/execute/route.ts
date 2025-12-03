@@ -3,6 +3,7 @@ import { executeSQLQuery, executeQueryLogic, executeSQLOnCSV } from '@/analytics
 import { executeFileQuery } from '@/analytics-engine/services/file-query-executor';
 import { QueryType, SourceType } from '@/analytics-engine/types';
 import * as path from 'path';
+import { prisma } from '@/lib/prisma';
 
 interface ExecuteRequest {
   query_type: QueryType;
@@ -21,12 +22,16 @@ export async function POST(request: NextRequest) {
     const body: ExecuteRequest = await request.json();
     
     // Debug logging
-    console.log('Execute request received:', {
+    console.log('[EXECUTE] Request received:', {
       query_type: body.query_type,
       source_type: body.source_type,
       has_file_path: !!body.file_path,
       has_connection_string: !!body.connection_string,
+      has_data_source_id: !!body.data_source_id,
+      data_source_id: body.data_source_id,
+      is_canonical_query: body.is_canonical_query,
       query_preview: body.query_content?.substring(0, 100),
+      request_keys: Object.keys(body),
     });
     
     if (!body.query_type || !body.query_content || !body.source_type) {
@@ -87,21 +92,108 @@ export async function POST(request: NextRequest) {
             { status: 400 }
           );
         }
-        // Translate query if it's canonical and data_source_id is provided
+        // NO TRANSLATION NEEDED - We now use actual database names directly
+        // The LLM receives real table/column names, so queries work as-is
         let queryToExecute = body.query_content;
-        if (body.is_canonical_query && body.data_source_id) {
-          const { translateCanonicalQuery } = await import('@/analytics-engine/services/canonical-mapping-service');
-          queryToExecute = await translateCanonicalQuery(body.data_source_id, body.query_content);
-          console.log('Translated canonical query:', {
-            original: body.query_content,
-            translated: queryToExecute,
+        let dataSourceId = body.data_source_id;
+        const needsTranslation = false; // Disabled - using actual names eliminates translation
+        
+        console.log('[EXECUTE] Translation check:', {
+          needsTranslation,
+          is_canonical_query: body.is_canonical_query,
+          source_type: body.source_type,
+          has_data_source_id: !!body.data_source_id,
+          data_source_id: body.data_source_id,
+        });
+        
+        // If translation is needed but data_source_id is missing, try to find it from connection_string
+        if (needsTranslation && !dataSourceId && body.connection_string) {
+          try {
+            console.log('[EXECUTE] 🔍 Attempting to find data_source_id from connection_string...');
+            const dataSource = await prisma.dataSource.findFirst({
+              where: {
+                connectionString: body.connection_string,
+                isActive: true,
+              },
+              select: { id: true },
+            });
+            
+            if (dataSource) {
+              dataSourceId = dataSource.id;
+              console.log('[EXECUTE] ✅ Found data_source_id from connection_string:', dataSourceId);
+            } else {
+              console.warn('[EXECUTE] ⚠️ Could not find data_source_id matching connection_string');
+            }
+          } catch (lookupError) {
+            console.error('[EXECUTE] ❌ Error looking up data_source_id:', lookupError);
+          }
+        }
+        
+        // If translation is needed but data_source_id is still missing, return error
+        if (needsTranslation && !dataSourceId) {
+          console.error('[EXECUTE] ❌ CRITICAL: Translation needed but data_source_id missing!');
+          console.error('[EXECUTE] ❌ Query will fail because canonical table names don\'t exist in database');
+          console.error('[EXECUTE] Request details:', {
+            source_type: body.source_type,
+            is_canonical_query: body.is_canonical_query,
+            has_data_source_id: !!body.data_source_id,
+            data_source_id: body.data_source_id,
+            request_keys: Object.keys(body),
+            query_preview: body.query_content.substring(0, 200),
+          });
+          
+          return NextResponse.json(
+            { 
+              error: 'data_source_id is required for canonical query translation',
+              details: `The query uses canonical table names (like 'fee', 'student', 'aiquiz') which need to be translated to actual database table names. Please provide data_source_id in the request, or ensure the data source is properly configured with schema mappings.`,
+              source_type: body.source_type,
+              query_preview: body.query_content.substring(0, 200),
+            },
+            { status: 400 }
+          );
+        }
+        
+        if (needsTranslation && dataSourceId) {
+          try {
+            const { translateCanonicalQuery } = await import('@/analytics-engine/services/canonical-mapping-service');
+            console.log('[EXECUTE] 🔄 Translating query with data_source_id:', dataSourceId);
+            queryToExecute = await translateCanonicalQuery(dataSourceId, body.query_content);
+            console.log('[EXECUTE] ✅ Translation successful:', {
+              original: body.query_content.substring(0, 150),
+              translated: queryToExecute.substring(0, 150),
+              data_source_id: dataSourceId,
+            });
+          } catch (translationError) {
+            console.error('[EXECUTE] ❌ Query translation failed:', translationError);
+            console.error('[EXECUTE] Error details:', {
+              message: translationError instanceof Error ? translationError.message : String(translationError),
+              stack: translationError instanceof Error ? translationError.stack : undefined,
+            });
+            
+            // Return error instead of continuing with untranslated query
+            return NextResponse.json(
+              { 
+                error: 'Query translation failed',
+                details: translationError instanceof Error ? translationError.message : String(translationError),
+                suggestion: 'The canonical query could not be translated to actual database table names. Please ensure schema mappings are configured for this data source.',
+                data_source_id: dataSourceId,
+                query_preview: body.query_content.substring(0, 200),
+              },
+              { status: 400 }
+            );
+          }
+        } else if (body.data_source_id && !needsTranslation) {
+          console.log('[EXECUTE] ℹ️ data_source_id provided but translation not needed:', {
+            source_type: body.source_type,
+            is_canonical_query: body.is_canonical_query,
+            data_source_id: body.data_source_id,
           });
         }
         
         results = await executeSQLQuery(
           body.connection_string,
           queryToExecute,
-          body.data_source_id,
+          dataSourceId || body.data_source_id,
           body.user_question
         );
       }

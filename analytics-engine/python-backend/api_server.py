@@ -7,6 +7,12 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from schema_introspection import introspect_sql_schema, _normalize_connection_string
 from query_executor import execute_sql_query
+from system_catalog import (
+    get_system_catalog_metadata,
+    get_tables_metadata,
+    get_table_statistics,
+    validate_table_exists
+)
 import os
 import sys
 
@@ -239,12 +245,219 @@ def agent_explore_schema():
         }), 500
 
 
+@app.route('/system-catalog', methods=['POST'])
+def system_catalog():
+    """
+    Get metadata from database system catalog (INFORMATION_SCHEMA)
+    More efficient than full introspection for large databases
+    
+    POST: {
+        "connection_string": "mysql://...",
+        "database_name": "optional",
+        "schema_name": "optional",
+        "include_system_tables": false,
+        "database_type": "mysql|postgresql|sqlserver"
+    }
+    """
+    try:
+        data = request.get_json()
+        connection_string = data.get('connection_string')
+        database_name = data.get('database_name')
+        schema_name = data.get('schema_name')
+        include_system_tables = data.get('include_system_tables', False)
+        
+        if not connection_string:
+            return jsonify({
+                "error": "connection_string is required"
+            }), 400
+        
+        print(f"[PYTHON API] Querying system catalog for: {connection_string[:50]}...")
+        
+        metadata = get_system_catalog_metadata(
+            connection_string,
+            database_name,
+            schema_name,
+            include_system_tables
+        )
+        
+        print(f"[PYTHON API] System catalog query successful: Found {len(metadata.get('tables', []))} tables")
+        return jsonify({
+            "success": True,
+            "metadata": metadata
+        })
+        
+    except Exception as e:
+        print(f"[PYTHON API] System catalog error: {str(e)}", file=sys.stderr)
+        return jsonify({
+            "error": "System catalog query failed",
+            "details": str(e)
+        }), 500
+
+
+@app.route('/system-catalog/tables', methods=['POST'])
+def system_catalog_tables():
+    """
+    Get metadata for specific tables only
+    
+    POST: {
+        "connection_string": "mysql://...",
+        "table_names": ["table1", "table2"],
+        "database_name": "optional",
+        "schema_name": "optional"
+    }
+    """
+    try:
+        data = request.get_json()
+        connection_string = data.get('connection_string')
+        table_names = data.get('table_names', [])
+        database_name = data.get('database_name')
+        schema_name = data.get('schema_name')
+        
+        if not connection_string:
+            return jsonify({
+                "error": "connection_string is required"
+            }), 400
+        
+        if not table_names:
+            return jsonify({
+                "error": "table_names is required"
+            }), 400
+        
+        print(f"[PYTHON API] Getting metadata for {len(table_names)} tables...")
+        
+        tables = get_tables_metadata(
+            connection_string,
+            table_names,
+            database_name,
+            schema_name
+        )
+        
+        return jsonify({
+            "success": True,
+            "tables": tables
+        })
+        
+    except Exception as e:
+        print(f"[PYTHON API] System catalog tables error: {str(e)}", file=sys.stderr)
+        return jsonify({
+            "error": "System catalog tables query failed",
+            "details": str(e)
+        }), 500
+
+
+@app.route('/system-catalog/statistics', methods=['POST', 'GET'])
+def system_catalog_statistics():
+    """
+    Get table statistics (row counts, sizes)
+    
+    POST: {
+        "connection_string": "mysql://...",
+        "table_names": ["table1", "table2"],  # Optional, all tables if not provided
+        "database_name": "optional",
+        "schema_name": "optional"
+    }
+    
+    GET: Returns method not allowed message (use POST)
+    """
+    if request.method == 'GET':
+        return jsonify({
+            "error": "Method not allowed",
+            "message": "This endpoint requires POST method. Please use POST with JSON body containing 'connection_string' and optional 'table_names', 'database_name', 'schema_name'."
+        }), 405
+    
+    try:
+        data = request.get_json()
+        connection_string = data.get('connection_string')
+        table_names = data.get('table_names')
+        database_name = data.get('database_name')
+        schema_name = data.get('schema_name')
+        
+        if not connection_string:
+            return jsonify({
+                "error": "connection_string is required"
+            }), 400
+        
+        print(f"[PYTHON API] Getting statistics for {'specific tables' if table_names else 'all tables'}...")
+        
+        statistics = get_table_statistics(
+            connection_string,
+            table_names,
+            database_name,
+            schema_name
+        )
+        
+        return jsonify({
+            "success": True,
+            "statistics": statistics
+        })
+        
+    except Exception as e:
+        print(f"[PYTHON API] System catalog statistics error: {str(e)}", file=sys.stderr)
+        return jsonify({
+            "error": "System catalog statistics query failed",
+            "details": str(e)
+        }), 500
+
+
+@app.route('/system-catalog/validate', methods=['POST'])
+def system_catalog_validate():
+    """
+    Validate if table exists in database
+    
+    POST: {
+        "connection_string": "mysql://...",
+        "table_name": "table1",
+        "database_name": "optional",
+        "schema_name": "optional"
+    }
+    """
+    try:
+        data = request.get_json()
+        connection_string = data.get('connection_string')
+        table_name = data.get('table_name')
+        database_name = data.get('database_name')
+        schema_name = data.get('schema_name')
+        
+        if not connection_string:
+            return jsonify({
+                "error": "connection_string is required"
+            }), 400
+        
+        if not table_name:
+            return jsonify({
+                "error": "table_name is required"
+            }), 400
+        
+        exists = validate_table_exists(
+            connection_string,
+            table_name,
+            database_name,
+            schema_name
+        )
+        
+        return jsonify({
+            "success": True,
+            "exists": exists,
+            "table_name": table_name
+        })
+        
+    except Exception as e:
+        print(f"[PYTHON API] System catalog validate error: {str(e)}", file=sys.stderr)
+        return jsonify({
+            "error": "System catalog validation failed",
+            "details": str(e)
+        }), 500
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     print(f"[PYTHON API] Starting server on port {port}...")
     print(f"[PYTHON API] Health check: http://localhost:{port}/health")
     print(f"[PYTHON API] Introspect endpoint: http://localhost:{port}/introspect")
     print(f"[PYTHON API] Execute endpoint: http://localhost:{port}/execute")
+    print(f"[PYTHON API] System catalog endpoint: http://localhost:{port}/system-catalog")
+    print(f"[PYTHON API] System catalog tables endpoint: http://localhost:{port}/system-catalog/tables")
+    print(f"[PYTHON API] System catalog statistics endpoint: http://localhost:{port}/system-catalog/statistics")
     if AGENT_AVAILABLE:
         print(f"[PYTHON API] Agent query endpoint: http://localhost:{port}/agent/query")
         print(f"[PYTHON API] Agent explore-schema endpoint: http://localhost:{port}/agent/explore-schema")

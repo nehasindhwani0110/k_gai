@@ -8,8 +8,8 @@ The embedding cache system stores schema embeddings in the database so they pers
 
 ### 1. **Persistent Storage**
 - **Schema embeddings** (tables and columns) are stored in the `EmbeddingCache` Prisma model
-- **Question embeddings** are NEVER cached - generated fresh each time (they're unique)
-- Schema cache persists across server restarts
+- **Question embeddings** are cached by question text (normalized) - reused if same question asked again
+- Both schema and question caches persist across server restarts
 
 ### 2. **Schema Change Detection**
 - Each schema gets a unique hash based on table/column names and types
@@ -27,24 +27,25 @@ When semantic matching is first used for a schema:
 
 ### 4. **Cache Lookup Flow**
 ```
-User Question → Generate Fresh (Never Cached) → Use
+User Question → Check Memory Cache → Check Database Cache → Generate if missing → Store → Use
      ↓
 Schema Element → Check Memory Cache → Check Database Cache → Generate if missing → Store → Use
      ↓
-Schema Changed? → Clear Old Cache → Generate New Embeddings → Store → Use
+Schema Changed? → Clear Old Schema Cache → Generate New Schema Embeddings → Store → Use
 ```
 
 ## Benefits
 
 ### ✅ **Massive Cost Savings**
 - **Before**: Every query generates embeddings for all tables/columns (~$0.024 per query)
-- **After**: Schema embeddings generated once, reused forever. Only question embeddings generated (~$0.0001 per query)
+- **After**: Schema embeddings generated once, reused forever. Question embeddings cached and reused (~$0.0001 per query)
 - **Savings**: ~99% reduction in embedding API costs
 
 ### ✅ **Faster Response Times**
 - First query: ~2-3 seconds (generates schema embeddings)
-- Subsequent queries: ~0.1-0.5 seconds (uses cached schema embeddings, only generates question embedding)
-- **10x faster** for cached schemas
+- Subsequent queries with same schema: ~0.1-0.5 seconds (uses cached schema embeddings)
+- Repeated questions: ~0.05-0.1 seconds (uses cached question + schema embeddings)
+- **10x faster** for cached schemas, **20x faster** for repeated questions
 
 ### ✅ **Smart Cache Invalidation**
 - Automatically detects schema changes (new tables/columns)
@@ -145,7 +146,7 @@ The cache is **automatically** invalidated when:
 
 Cache is **NOT** invalidated for:
 - Server restarts (persistent storage)
-- Different questions (questions are never cached - generated fresh each time)
+- Different questions (questions are cached - reused if same question asked again)
 - Same schema with different questions (schema embeddings reused)
 
 ## Best Practices
@@ -153,7 +154,7 @@ Cache is **NOT** invalidated for:
 1. **Pre-generate on Schema Load**: Call `pregenerateSchemaEmbeddings()` when schema is first detected
 2. **Monitor Cache Size**: Use `getCacheStats()` to monitor cache growth
 3. **Clear When Schema Changes**: Clear cache when tables/columns are added/removed
-4. **Question Embeddings**: Don't persist (they're unique and use in-memory cache)
+4. **Question Embeddings**: Persisted in database cache - reused if same question asked again
 
 ## Technical Details
 

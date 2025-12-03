@@ -67,40 +67,73 @@ export default function LineChart({ data, title }: LineChartProps) {
   let categoryKey = keys[0] || 'category';
   let valueKey = keys[1] || 'value';
 
-  const categoryPatterns = ['date', 'time', 'year', 'month', 'day', 'week', 'quarter', 'period', 'name', 'category', 'label'];
-  const valuePatterns = ['value', 'count', 'total', 'amount', 'score', 'percentage', 'avg', 'sum', 'cgpa', 'attendance', 'marks'];
+  // Improved column detection - check multiple rows
+  const sampleSize = Math.min(5, data.length);
+  const numericCols = keys.filter(key => {
+    let numericCount = 0;
+    for (let i = 0; i < sampleSize; i++) {
+      const val = data[i]?.[key];
+      if (val !== null && val !== undefined && typeof val === 'number') {
+        numericCount++;
+      }
+    }
+    return numericCount > sampleSize / 2;
+  });
+
+  const categoryPatterns = ['date', 'time', 'year', 'month', 'day', 'week', 'quarter', 'period', 'name', 'category', 'label', 'group', 'type'];
+  const valuePatterns = ['value', 'count', 'total', 'amount', 'score', 'percentage', 'avg', 'average', 'sum', 'cgpa', 'attendance', 'marks', 'content', 'rate'];
   
   const timeKey = keys.find(key => {
     const lowerKey = key.toLowerCase();
-    return /date|time|year|month|day|week|quarter|created|updated/i.test(lowerKey);
+    const isTimeByName = /date|time|year|month|day|week|quarter|created|updated|period/i.test(lowerKey);
+    if (isTimeByName) return true;
+    // Also check if values look like dates
+    const sampleVal = data[0]?.[key];
+    if (sampleVal && typeof sampleVal === 'string') {
+      return /^\d{4}-\d{2}-\d{2}|^\d{2}\/\d{2}\/\d{4}/.test(sampleVal);
+    }
+    return false;
   });
   
   if (timeKey) {
     categoryKey = timeKey;
+    // Find value column excluding the time key
+    valueKey = numericCols.find(k => k !== timeKey) || numericCols[0] || keys.find(k => k !== timeKey) || keys[1];
   } else {
+    // Try to identify by column name patterns
     for (const key of keys) {
       const lowerKey = key.toLowerCase();
-      if (categoryPatterns.some(p => lowerKey.includes(p)) && typeof data[0][key] !== 'number') {
-        categoryKey = key;
-        break;
+      if (categoryPatterns.some(p => lowerKey.includes(p))) {
+        // Check if it's not numeric
+        const isNumeric = numericCols.includes(key);
+        if (!isNumeric || (isNumeric && keys.length === 2)) {
+          categoryKey = key;
+          break;
+        }
       }
     }
   }
   
-  for (const key of keys) {
-    if (key === categoryKey) continue;
+  // Find value column by name patterns or numeric type
+  const valueKeyByName = keys.find(key => {
+    if (key === categoryKey) return false;
     const lowerKey = key.toLowerCase();
-    if (valuePatterns.some(p => lowerKey.includes(p)) || typeof data[0][key] === 'number') {
-      valueKey = key;
-      break;
-    }
-  }
+    return valuePatterns.some(p => lowerKey.includes(p)) && numericCols.includes(key);
+  });
   
-  if (!valueKey || typeof data[0][valueKey] !== 'number') {
-    const numericKey = keys.find(key => typeof data[0][key] === 'number' && key !== categoryKey);
+  if (valueKeyByName) {
+    valueKey = valueKeyByName;
+  } else {
+    // Fallback: find first numeric column that's not the category
+    const numericKey = numericCols.find(key => key !== categoryKey);
     if (numericKey) {
       valueKey = numericKey;
     }
+  }
+  
+  // Final validation
+  if (!valueKey || !keys.includes(valueKey)) {
+    valueKey = keys.find(k => k !== categoryKey && numericCols.includes(k)) || keys[1] || keys[0];
   }
 
   // Check if category is a date/time column

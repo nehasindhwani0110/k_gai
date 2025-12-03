@@ -5,6 +5,7 @@ import {
   getSourceMetadata,
   autoRegisterSchemaFromIntrospection,
 } from '@/analytics-engine/services/canonical-mapping-service';
+import { getHybridMetadata } from '@/analytics-engine/services/hybrid-metadata-service';
 import { prisma } from '@/lib/prisma';
 
 /**
@@ -94,9 +95,44 @@ export async function GET(
       }
     }
 
-    // Default: return canonical schema
-    const metadata = await getCanonicalSchema(id);
-    return NextResponse.json(metadata);
+    // Use hybrid metadata service for optimal performance
+    // This combines system catalog (real-time) with semantic search (smart filtering)
+    // IMPORTANT: We now return ACTUAL database names (not canonical) to avoid translation issues
+    const userQuestion = searchParams.get('question'); // Optional: for semantic filtering
+    const forceRefresh = searchParams.get('forceRefresh') === 'true'; // Optional: force refresh to detect new tables/columns
+    
+    try {
+      console.log(`[SCHEMA] Using hybrid metadata service for data source: ${id}${forceRefresh ? ' (force refresh)' : ''}`);
+      
+      const metadata = await getHybridMetadata({
+        dataSourceId: id,
+        userQuestion: userQuestion || undefined,
+        maxTables: 50, // Limit for large databases
+        useSystemCatalog: true, // Use system catalog for real-time accuracy (always fresh, no cache)
+        useSemanticSearch: !!userQuestion, // Use semantic search if question provided
+        includeStatistics: false, // Can enable for query planning
+        forceRefresh: forceRefresh, // Force refresh to detect schema changes immediately
+      });
+      
+      // Ensure data_source_id is included in response
+      const responseMetadata = {
+        ...metadata,
+        data_source_id: id, // Always include the data source ID
+      };
+      
+      console.log(`[SCHEMA] ✅ Hybrid metadata loaded: ${metadata.tables?.length || 0} tables`);
+      return NextResponse.json(responseMetadata);
+    } catch (error) {
+      console.error(`[SCHEMA] Hybrid metadata failed, falling back to canonical schema:`, error);
+      
+      // Fallback to canonical schema
+      const metadata = await getCanonicalSchema(id);
+      const responseMetadata = {
+        ...metadata,
+        data_source_id: id,
+      };
+      return NextResponse.json(responseMetadata);
+    }
   } catch (error) {
     console.error('Error fetching schema:', error);
     return NextResponse.json(

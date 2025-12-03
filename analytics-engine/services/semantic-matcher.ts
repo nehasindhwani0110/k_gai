@@ -3,14 +3,31 @@
  * 
  * Uses OpenAI embeddings to semantically match user questions with database schema elements.
  * This provides more accurate and efficient matching than keyword-based or LLM-based selection.
+ * 
+ * PRODUCTION OPTIMIZATIONS:
+ * - Uses rate limiting from embedding-cache service
+ * - Includes timeout handling
+ * - Leverages cached embeddings for performance
  */
 
 import OpenAI from 'openai';
 import { createTracedOpenAI } from '../utils/langsmith-tracer';
 import { DataSourceMetadata, TableMetadata, ColumnMetadata } from '../types';
+import { createRateLimiter } from '../utils/rate-limiter';
 
 // Initialize traced OpenAI client
 const openai = createTracedOpenAI();
+
+/**
+ * Rate limiter for question embeddings (separate from schema embeddings)
+ * Questions are generated fresh each time, so we need rate limiting here too
+ */
+const QUESTION_RATE_LIMIT = createRateLimiter(10); // Max 10 concurrent question embeddings
+
+/**
+ * Timeout for embedding generation (30 seconds)
+ */
+const EMBEDDING_TIMEOUT_MS = 30000;
 
 /**
  * Interface for semantic match results
@@ -23,25 +40,47 @@ interface SemanticMatch {
 
 /**
  * Generates embedding for a text using OpenAI
- * Schema embeddings are cached persistently, questions are generated fresh each time
+ * Schema embeddings are cached persistently, questions are also cached for reuse
  */
 async function generateEmbedding(
   text: string, 
   isQuestion: boolean = false,
   schemaHash?: string
 ): Promise<number[]> {
-  // For questions: always generate fresh (never cache)
+  // For questions: check cache first, then generate if needed
   if (isQuestion) {
+    const { getCachedEmbedding, setCachedEmbedding } = await import('./embedding-cache');
+    
+    // Check cache first (questions don't use schemaHash)
+    const cachedEmbedding = await getCachedEmbedding(text, 'question');
+    if (cachedEmbedding) {
+      console.log(`[SEMANTIC-MATCHER] ✅ Question embedding CACHE HIT: "${text.substring(0, 50)}..."`);
+      return cachedEmbedding;
+    }
+    
     try {
-      console.log(`[SEMANTIC-MATCHER] 🔄 Generating question embedding (fresh, not cached): "${text.substring(0, 50)}..."`);
+      console.log(`[SEMANTIC-MATCHER] 🔄 Generating question embedding (not cached): "${text.substring(0, 50)}..."`);
       
-      const response = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: text,
+      const embedding = await QUESTION_RATE_LIMIT(async () => {
+        // Create timeout promise
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Question embedding generation timeout')), EMBEDDING_TIMEOUT_MS);
+        });
+        
+        // Create embedding promise
+        const embeddingPromise = openai.embeddings.create({
+          model: 'text-embedding-3-small',
+          input: text,
+        });
+        
+        // Race between embedding generation and timeout
+        const response = await Promise.race([embeddingPromise, timeoutPromise]);
+        return response.data[0].embedding;
       });
-
-      const embedding = response.data[0].embedding;
-      console.log(`[SEMANTIC-MATCHER] ✅ Question embedding generated (dimension: ${embedding.length}, not cached)`);
+      
+      // Cache the question embedding for future use
+      await setCachedEmbedding(text, embedding, 'question');
+      console.log(`[SEMANTIC-MATCHER] ✅ Question embedding generated and cached (dimension: ${embedding.length})`);
       return embedding;
     } catch (error) {
       console.error('[SEMANTIC-MATCHER] ❌ Error generating question embedding:', error);
@@ -53,10 +92,26 @@ async function generateEmbedding(
   const { getCachedEmbedding, setCachedEmbedding } = await import('./embedding-cache');
   const type = text.startsWith('Table:') ? 'table' : 'column';
   
-  // Check cache first (only if schema hash provided)
+  // OPTIMIZATION: Check cache with schema hash first, then without schema hash as fallback
+  // This handles cases where metadata was filtered (schema hash changed) but embeddings exist from original schema
   if (schemaHash) {
     const cachedEmbedding = await getCachedEmbedding(text, type, schemaHash);
     
+    if (cachedEmbedding) {
+      console.log(`[SEMANTIC-MATCHER] ✅ Cache HIT (${type}) for: "${text.substring(0, 50)}..."`);
+      return cachedEmbedding;
+    }
+    
+    // Fallback: Check cache WITHOUT schema hash (for filtered metadata where hash changed)
+    // Embeddings are cached by text content, so they should still be found
+    const cachedWithoutHash = await getCachedEmbedding(text, type);
+    if (cachedWithoutHash) {
+      console.log(`[SEMANTIC-MATCHER] ✅ Cache HIT (${type}, no hash) for: "${text.substring(0, 50)}..."`);
+      return cachedWithoutHash;
+    }
+  } else {
+    // No schema hash - check cache without hash
+    const cachedEmbedding = await getCachedEmbedding(text, type);
     if (cachedEmbedding) {
       console.log(`[SEMANTIC-MATCHER] ✅ Cache HIT (${type}) for: "${text.substring(0, 50)}..."`);
       return cachedEmbedding;
@@ -66,6 +121,7 @@ async function generateEmbedding(
   try {
     console.log(`[SEMANTIC-MATCHER] 🔄 Generating schema embedding (${type}): "${text.substring(0, 50)}..."`);
     
+    // Generate embedding directly (rate limiting is handled by the cache service when storing)
     const response = await openai.embeddings.create({
       model: 'text-embedding-3-small', // Cost-effective and fast
       input: text,
@@ -74,6 +130,7 @@ async function generateEmbedding(
     const embedding = response.data[0].embedding;
     
     // Cache schema embeddings (with schema hash)
+    // The cache service handles rate limiting internally
     if (schemaHash) {
       await setCachedEmbedding(text, embedding, type, schemaHash);
       console.log(`[SEMANTIC-MATCHER] ✅ Schema embedding cached (dimension: ${embedding.length})`);
@@ -138,7 +195,8 @@ export async function findRelevantTables(
   question: string,
   metadata: DataSourceMetadata,
   topN: number = 5,
-  schemaHash?: string
+  schemaHash?: string,
+  dataSourceId?: string
 ): Promise<SemanticMatch[]> {
   const tables = metadata.tables || [];
   
@@ -162,26 +220,97 @@ export async function findRelevantTables(
     }));
   }
 
+  // OPTIMIZATION: Check Redis cache for semantic match results first
+  if (dataSourceId && schemaHash) {
+    try {
+      const crypto = require('crypto');
+      const questionHash = crypto.createHash('sha256').update(question.toLowerCase().trim()).digest('hex').substring(0, 16);
+      const { getCachedSemanticMatch } = await import('./redis-cache');
+      const cachedMatches = await getCachedSemanticMatch(questionHash, dataSourceId);
+      
+      if (cachedMatches && cachedMatches.length > 0) {
+        console.log(`[SEMANTIC-MATCHER] ⚡ Redis cache HIT for semantic match (${cachedMatches.length} matches)`);
+        // Return cached matches, but limit to topN
+        return cachedMatches.slice(0, topN);
+      }
+      console.log(`[SEMANTIC-MATCHER] ⚪ Redis cache MISS for semantic match`);
+    } catch (error) {
+      console.warn('[SEMANTIC-MATCHER] ⚠️ Failed to check Redis cache, proceeding with semantic matching:', error);
+    }
+  }
+
   try {
-    // Generate embedding for the question (always fresh, never cached)
-    console.log('[SEMANTIC-MATCHER] 📊 Step 1: Generating question embedding (fresh, not cached)...');
+    // Generate embedding for the question (cached if previously asked)
+    console.log('[SEMANTIC-MATCHER] 📊 Step 1: Getting question embedding (checking cache first)...');
     const questionEmbedding = await generateEmbedding(question, true);
     
-    // Generate embeddings for all tables and calculate similarities
+    // For very large databases (100+ tables), use name-based pre-filtering
+    // This reduces the number of tables we need to check semantically
+    let tablesToCheck = tables;
+    const isVeryLargeDatabase = tables.length > 100;
+    
+    if (isVeryLargeDatabase) {
+      console.log(`[SEMANTIC-MATCHER] ⚡ Very large database (${tables.length} tables) - using name-based pre-filtering`);
+      // Extract keywords from question (simple approach)
+      const questionLower = question.toLowerCase();
+      const questionWords = questionLower.split(/\s+/).filter(w => w.length > 3); // Words longer than 3 chars
+      
+      // Pre-filter tables based on name matching
+      const preFiltered = tables.filter(table => {
+        const tableNameLower = table.name.toLowerCase();
+        // Check if any question word appears in table name
+        return questionWords.some(word => tableNameLower.includes(word)) ||
+               // Or check if table name contains common patterns from question
+               questionWords.some(word => {
+                 // Try plural/singular variations
+                 const singular = word.replace(/s$/, '');
+                 const plural = word + 's';
+                 return tableNameLower.includes(singular) || tableNameLower.includes(plural);
+               });
+      });
+      
+      // If pre-filtering found reasonable number of candidates, use them
+      // Otherwise fall back to checking all tables (but limit to top 100 by name similarity)
+      if (preFiltered.length > 0 && preFiltered.length < tables.length * 0.5) {
+        tablesToCheck = preFiltered;
+        console.log(`[SEMANTIC-MATCHER] ✅ Pre-filtered to ${preFiltered.length} candidate tables`);
+      } else {
+        // Too many or too few matches - use first 100 tables (sorted by name similarity)
+        const scored = tables.map(table => {
+          const tableNameLower = table.name.toLowerCase();
+          let score = 0;
+          questionWords.forEach(word => {
+            if (tableNameLower.includes(word)) score += 2;
+            if (tableNameLower.startsWith(word)) score += 1;
+          });
+          return { table, score };
+        });
+        scored.sort((a, b) => b.score - a.score);
+        tablesToCheck = scored.slice(0, Math.min(100, tables.length)).map(s => s.table);
+        console.log(`[SEMANTIC-MATCHER] ✅ Pre-filtered to top ${tablesToCheck.length} tables by name similarity`);
+      }
+    }
+    
+    // Generate embeddings for filtered tables and calculate similarities
     const tableMatches: SemanticMatch[] = [];
     
-    console.log(`[SEMANTIC-MATCHER] 📊 Step 2: Processing ${tables.length} tables (using cached schema embeddings)...`);
+    console.log(`[SEMANTIC-MATCHER] 📊 Step 2: Processing ${tablesToCheck.length} tables (using cached schema embeddings)...`);
     
-    // Process tables in batches to avoid overwhelming the API
-    const batchSize = 10;
+    // Process tables in batches with parallel processing
+    // OPTIMIZATION: Larger batch size for cached embeddings (much faster)
+    const batchSize = 50; // Increased batch size - embeddings are cached, so parallel processing is safe
     let batchNum = 1;
-    for (let i = 0; i < tables.length; i += batchSize) {
-      const batch = tables.slice(i, i + batchSize);
-      console.log(`[SEMANTIC-MATCHER]   Processing batch ${batchNum} (tables ${i + 1}-${Math.min(i + batchSize, tables.length)})...`);
+    const startTime = Date.now();
+    
+    for (let i = 0; i < tablesToCheck.length; i += batchSize) {
+      const batch = tablesToCheck.slice(i, i + batchSize);
+      const batchStartTime = Date.now();
+      console.log(`[SEMANTIC-MATCHER]   Processing batch ${batchNum} (tables ${i + 1}-${Math.min(i + batchSize, tablesToCheck.length)})...`);
       
       const batchPromises = batch.map(async (table) => {
         const tableDescription = createTableDescription(table);
-        // Use cached schema embedding (will generate if not cached)
+        // Use cached schema embedding (will generate if not cached - lazy loading)
+        // Database cache lookup is fast, and Redis cache will speed this up further
         const tableEmbedding = await generateEmbedding(tableDescription, false, schemaHash);
         const similarity = cosineSimilarity(questionEmbedding, tableEmbedding);
         
@@ -194,12 +323,30 @@ export async function findRelevantTables(
       
       const batchResults = await Promise.all(batchPromises);
       tableMatches.push(...batchResults);
+      const batchTime = ((Date.now() - batchStartTime) / 1000).toFixed(2);
+      console.log(`[SEMANTIC-MATCHER]   ✅ Batch ${batchNum} complete (${batchResults.length} tables, ${batchTime}s)`);
       batchNum++;
     }
+    
+    const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`[SEMANTIC-MATCHER] ⚡ Processed ${tablesToCheck.length} tables in ${totalTime}s (${(tablesToCheck.length / parseFloat(totalTime)).toFixed(1)} tables/sec)`);
     
     // Sort by similarity score (descending) and return top N
     tableMatches.sort((a, b) => b.score - a.score);
     const topMatches = tableMatches.slice(0, topN);
+    
+    // OPTIMIZATION: Cache semantic match results in Redis
+    if (dataSourceId && schemaHash) {
+      try {
+        const crypto = require('crypto');
+        const questionHash = crypto.createHash('sha256').update(question.toLowerCase().trim()).digest('hex').substring(0, 16);
+        const { cacheSemanticMatch } = await import('./redis-cache');
+        await cacheSemanticMatch(questionHash, dataSourceId, topMatches, 1800); // 30 min TTL
+        console.log(`[SEMANTIC-MATCHER] ✅ Cached semantic match results in Redis`);
+      } catch (error) {
+        console.warn('[SEMANTIC-MATCHER] ⚠️ Failed to cache semantic match in Redis:', error);
+      }
+    }
     
     console.log(`\n[SEMANTIC-MATCHER] ✅ Semantic matching complete!`);
     console.log(`[SEMANTIC-MATCHER] Top ${topMatches.length} matches:`);
@@ -249,7 +396,7 @@ export async function findRelevantColumns(
   }
 
   try {
-    // Generate embedding for the question (always fresh, never cached)
+    // Generate embedding for the question (cached if previously asked)
     const questionEmbedding = await generateEmbedding(question, true);
     
     // Generate embeddings for all columns and calculate similarities
@@ -295,13 +442,48 @@ export async function findRelevantColumns(
 /**
  * Enhanced semantic matching that considers both table and column relevance
  * Returns reduced metadata with only the most relevant tables and columns
+ * 
+ * Automatically adjusts maxTables and maxColumnsPerTable based on schema size
+ * to ensure we stay within token limits
  */
 export async function createSemanticallyReducedMetadata(
   question: string,
   metadata: DataSourceMetadata,
-  maxTables: number = 5,
-  maxColumnsPerTable: number = 15
+  maxTables?: number,
+  maxColumnsPerTable?: number
 ): Promise<DataSourceMetadata> {
+  const allTables = metadata.tables || [];
+  const totalColumns = allTables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
+  
+  // Auto-adjust limits based on schema size
+  // For large databases (75+ tables), we need more tables to ensure accuracy
+  if (maxTables === undefined) {
+    if (allTables.length > 75) {
+      maxTables = 7; // Very large (75+): top 7 tables for better accuracy
+      console.log(`[SEMANTIC-MATCHER] 📊 Very large database detected (${allTables.length} tables), selecting top ${maxTables} tables`);
+    } else if (allTables.length > 50) {
+      maxTables = 5; // Large (50-75): top 5 tables
+      console.log(`[SEMANTIC-MATCHER] 📊 Large database detected (${allTables.length} tables), selecting top ${maxTables} tables`);
+    } else if (allTables.length > 20) {
+      maxTables = 5; // Medium-large: top 5 tables
+    } else {
+      maxTables = Math.min(10, allTables.length); // Medium: up to 10 tables
+    }
+  }
+  
+  if (maxColumnsPerTable === undefined) {
+    // For very large databases, we need more columns per table to avoid missing relevant ones
+    if (totalColumns > 500) {
+      maxColumnsPerTable = 20; // Very large: top 20 columns per table (increased from 10)
+      console.log(`[SEMANTIC-MATCHER] 📊 Very large schema detected (${totalColumns} total columns), selecting top ${maxColumnsPerTable} columns per table`);
+    } else if (totalColumns > 200) {
+      maxColumnsPerTable = 15; // Large: top 15 columns per table (increased from 10)
+    } else if (totalColumns > 100) {
+      maxColumnsPerTable = 20; // Medium-large: top 20 columns per table
+    } else {
+      maxColumnsPerTable = 25; // Medium: up to 25 columns per table
+    }
+  }
   console.log(`\n${'='.repeat(80)}`);
   console.log(`[SEMANTIC-MATCHER] 🚀 SEMANTIC ANALYSIS ACTIVATED`);
   console.log(`${'='.repeat(80)}`);
@@ -311,24 +493,47 @@ export async function createSemanticallyReducedMetadata(
   const schemaHash = generateSchemaHash(metadata);
   console.log(`[SEMANTIC-MATCHER] 📋 Schema hash: ${schemaHash} (used for cache invalidation)`);
   
-  // Pre-generate schema embeddings if not already cached
-  // Only generates embeddings for NEW schema elements (not already cached)
-  // Automatically detects schema changes and clears old cache
-  try {
-    const { pregenerateSchemaEmbeddings } = await import('./embedding-cache');
-    await pregenerateSchemaEmbeddings(metadata);
-  } catch (error) {
-    console.warn('[SEMANTIC-MATCHER] Pre-generation failed, will generate on-demand:', error);
+  // OPTIMIZATION: Skip pre-generation if metadata is already filtered (from previous semantic search)
+  // If we have 30 tables or less, it means we already did semantic filtering - skip pre-generation
+  // Pre-generation is only needed for the FIRST semantic search on full database
+  const isAlreadyFiltered = allTables.length <= 30;
+  const isVeryLargeDatabase = allTables.length > 100;
+  
+  if (!isAlreadyFiltered && !isVeryLargeDatabase) {
+    // Pre-generate schema embeddings if not already cached (only for smaller databases)
+    // Only generates embeddings for NEW schema elements or when schema changes
+    // Uses schema hash to detect changes - only regenerates what's needed
+    try {
+      const { pregenerateSchemaEmbeddings } = await import('./embedding-cache');
+      console.log(`[SEMANTIC-MATCHER] 🔄 Pre-generating schema embeddings (${allTables.length} tables)...`);
+      await pregenerateSchemaEmbeddings(metadata, schemaHash);
+      console.log(`[SEMANTIC-MATCHER] ✅ Schema embeddings ready`);
+    } catch (error) {
+      console.warn('[SEMANTIC-MATCHER] Pre-generation failed, will generate on-demand:', error);
+    }
+  } else if (isAlreadyFiltered) {
+    console.log(`[SEMANTIC-MATCHER] ⚡ Metadata already filtered (${allTables.length} tables) - skipping pre-generation`);
+    console.log(`[SEMANTIC-MATCHER] ⚡ Using lazy loading for column-level filtering (embeddings cached from previous search)`);
+  } else {
+    console.log(`[SEMANTIC-MATCHER] ⚡ Very large database (${allTables.length} tables) - using lazy loading`);
+    console.log(`[SEMANTIC-MATCHER] ⚡ Embeddings will be generated on-demand (much faster for large databases)`);
   }
   
   try {
     // Step 1: Find most relevant tables (uses cached schema embeddings)
+    console.log(`[SEMANTIC-MATCHER] 📊 Finding top ${maxTables} relevant tables from ${allTables.length} total tables...`);
+    // Note: dataSourceId not available here, but that's okay - Redis cache will work on next call
     const relevantTables = await findRelevantTables(question, metadata, maxTables, schemaHash);
     
     if (relevantTables.length === 0) {
       console.log('[SEMANTIC-MATCHER] ⚠️ No relevant tables found, returning original metadata');
       return metadata;
     }
+    
+    console.log(`[SEMANTIC-MATCHER] ✅ Selected ${relevantTables.length} relevant tables:`);
+    relevantTables.forEach((match, idx) => {
+      console.log(`[SEMANTIC-MATCHER]   ${idx + 1}. ${match.name} (score: ${match.score.toFixed(3)})`);
+    });
     
     // Step 2: For each relevant table, find most relevant columns (uses cached schema embeddings)
     const reducedTables: TableMetadata[] = [];
@@ -372,7 +577,7 @@ export async function createSemanticallyReducedMetadata(
     console.log(`[SEMANTIC-MATCHER]   Reduction: ${((1 - reducedColumnCount / originalColumnCount) * 100).toFixed(1)}% fewer columns`);
     const cacheStats = await getCacheStats();
     console.log(`[SEMANTIC-MATCHER]   Cache: ${cacheStats.databaseSize} schema embeddings cached (${cacheStats.tables} tables, ${cacheStats.columns} columns)`);
-    console.log(`[SEMANTIC-MATCHER]   Note: Question embeddings are generated fresh each time (not cached)`);
+    console.log(`[SEMANTIC-MATCHER]   Note: Question embeddings are cached and reused`);
     console.log(`${'='.repeat(80)}\n`);
     
     return {
@@ -394,8 +599,9 @@ export async function createSemanticallyReducedMetadata(
 export async function pregenerateSchemaEmbeddings(
   metadata: DataSourceMetadata
 ): Promise<void> {
-  const { pregenerateSchemaEmbeddings: pregen } = await import('./embedding-cache');
-  await pregen(metadata);
+  const { pregenerateSchemaEmbeddings: pregen, generateSchemaHash } = await import('./embedding-cache');
+  const schemaHash = generateSchemaHash(metadata);
+  await pregen(metadata, schemaHash);
 }
 
 /**
