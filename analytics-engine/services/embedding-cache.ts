@@ -11,11 +11,9 @@
  * - Timeout handling for long-running operations
  */
 
-import { PrismaClient } from '@prisma/client';
 import { LRUCache } from 'lru-cache';
 import { createRateLimiter } from '../utils/rate-limiter';
-
-const prisma = new PrismaClient();
+import { prisma } from '@/lib/prisma'; // Use shared Prisma instance to prevent connection leaks
 
 /**
  * In-memory LRU cache for quick access (backed by database)

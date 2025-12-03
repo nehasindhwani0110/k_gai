@@ -3,8 +3,14 @@ import { parse } from 'csv-parse';
 import { parseDate, extractYear, extractMonth, extractDay, extractDate, getYearMonth, getYear, isDate } from '../utils/date-utils';
 
 /**
+ * Maximum number of rows to return from a CSV query (prevents memory exhaustion)
+ */
+const MAX_RESULT_ROWS = 10000;
+
+/**
  * Executes SQL-like queries on CSV files
  * Supports basic SELECT queries with WHERE, GROUP BY, ORDER BY, LIMIT
+ * Enforces maximum result limit to prevent memory exhaustion
  */
 export async function executeCSVQuery(
   filePath: string,
@@ -44,8 +50,8 @@ export async function executeCSVQuery(
     }
     
     if (!selectMatch) {
-      // If no SELECT found, return all records
-      return records.slice(0, 100); // Limit to 100 for safety
+      // If no SELECT found, return limited records
+      return records.slice(0, Math.min(100, MAX_RESULT_ROWS)); // Limit to 100 for safety
     }
 
     const selectFields = selectMatch[1].trim();
@@ -73,11 +79,19 @@ export async function executeCSVQuery(
       };
     }
 
-    // Extract LIMIT clause
+    // Extract LIMIT clause and enforce maximum
     let limit: number | null = null;
     const limitMatch = query.match(/LIMIT\s+(\d+)/i);
     if (limitMatch) {
       limit = parseInt(limitMatch[1], 10);
+      // Enforce maximum result limit
+      if (limit > MAX_RESULT_ROWS) {
+        console.warn(`[CSV-QUERY] ⚠️ LIMIT ${limit} exceeds maximum ${MAX_RESULT_ROWS}, enforcing limit`);
+        limit = MAX_RESULT_ROWS;
+      }
+    } else {
+      // No LIMIT specified - enforce default maximum
+      limit = MAX_RESULT_ROWS;
     }
 
     // Extract GROUP BY and aggregate functions

@@ -497,20 +497,43 @@ function formatMetadata(metadata: DataSourceMetadata): string {
 export async function generateAdhocQuery(
   userQuestion: string,
   metadata: DataSourceMetadata,
-  connectionString?: string
+  connectionString?: string,
+  questionUnderstanding?: {
+    intent: string;
+    keyConcepts: string[];
+    entities: string[];
+    queryType: string;
+    semanticSummary: string;
+  } | null
 ): Promise<AdhocQueryResponse> {
   // Dynamic import to avoid circular dependencies
   const { estimateMetadataTokens, isMetadataSizeSafe, getRequiredReductionRatio } = await import('../utils/token-counter');
   const model = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
   
-  // STEP 1: Understand question semantics FIRST (like semantic search)
-  const questionUnderstanding = await understandQuestionSemantics(userQuestion);
+  // CRITICAL: Understand question if not provided (for non-SQL sources or fallback)
+  // Question understanding helps generate accurate queries by identifying intent, key concepts, and entities
+  if (!questionUnderstanding) {
+    try {
+      console.log(`[LLM-SERVICE] 🧠 Understanding question semantics: "${userQuestion}"`);
+      questionUnderstanding = await understandQuestionSemantics(userQuestion);
+      console.log(`[LLM-SERVICE] ✅ Question understanding complete:`, {
+        intent: questionUnderstanding.intent,
+        queryType: questionUnderstanding.queryType,
+        keyConcepts: questionUnderstanding.keyConcepts?.slice(0, 3).join(', '),
+      });
+    } catch (error) {
+      console.warn(`[LLM-SERVICE] ⚠️ Question understanding failed, proceeding without it:`, error);
+      questionUnderstanding = null;
+    }
+  }
   
-  // Enhance user question with semantic understanding for better matching
-  const enhancedQuestion = `${questionUnderstanding.semanticSummary}\n\nIntent: ${questionUnderstanding.intent}\nKey Concepts: ${questionUnderstanding.keyConcepts.join(', ')}`;
+  // Enhance user question with semantic understanding for better query generation
+  const enhancedQuestion = questionUnderstanding
+    ? `${userQuestion}\n\nSemantic Understanding:\n- Intent: ${questionUnderstanding.intent}\n- Query Type: ${questionUnderstanding.queryType}\n- Key Concepts: ${questionUnderstanding.keyConcepts.join(', ')}\n- Entities: ${questionUnderstanding.entities.join(', ')}\n- Semantic Summary: ${questionUnderstanding.semanticSummary}`
+    : userQuestion;
   
-  // For large databases with data_source_id, try using hybrid metadata service
-  // This combines system catalog (real-time) with semantic search (smart filtering)
+  // Metadata should already be filtered by API route (getHybridMetadata with semantic search)
+  // This function just uses the metadata it receives - no need to refresh again
   let reducedMetadata = metadata;
   const allTables = metadata.tables || [];
   const totalColumns = allTables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
@@ -528,17 +551,20 @@ export async function generateAdhocQuery(
   
   console.log(`[LLM-SERVICE] 📊 Metadata size: ${metadataTokens} tokens, Safe limit: ${isSafe ? '✅' : '❌'}`);
   
-  // ALWAYS use semantic matching if:
-  // 1. Metadata exceeds safe token limit, OR
-  // 2. File-based sources with many columns (>15), OR
-  // 3. SQL databases with many tables (>3) or many columns (>30)
-  // 4. For large databases (20+ tables), ALWAYS use semantic matching for better accuracy
-  const shouldUseSemanticMatching = !isSafe || 
-    (isFileBased && totalColumns > 15) || 
-    (!isFileBased && (reducedMetadata.tables?.length || 0 > 3 || totalColumns > 30)) ||
-    (!isFileBased && (reducedMetadata.tables?.length || 0) > 20); // Force semantic matching for large databases
+  // OPTIMIZATION: Check if metadata is already semantically filtered (from getHybridMetadata)
+  // If metadata has <= 30 tables, it's likely already filtered - skip redundant semantic matching
+  // Metadata from getHybridMetadata with semantic search typically has <= 30 tables
+  const isAlreadyFiltered = allTables.length <= 30;
   
-  if (shouldUseSemanticMatching) {
+  // ALWAYS use semantic matching if:
+  // 1. Metadata exceeds safe token limit AND not already filtered, OR
+  // 2. File-based sources with many columns (>15), OR
+  // 3. SQL databases with many tables (>30) or many columns (>50) AND not already filtered
+  const shouldUseSemanticMatching = (!isSafe && !isAlreadyFiltered) || 
+    (isFileBased && totalColumns > 15) || 
+    (!isFileBased && !isAlreadyFiltered && (allTables.length > 30 || totalColumns > 50));
+  
+  if (shouldUseSemanticMatching && !isAlreadyFiltered) {
     console.log(`[LLM-SERVICE] 🎯 Using semantic analysis for ${isFileBased ? `${metadata.source_type} file` : 'SQL database'} (${allTables.length} tables, ${totalColumns} columns)`);
     
     if (!isSafe) {
@@ -591,43 +617,218 @@ export async function generateAdhocQuery(
     });
   });
   
-  // CRITICAL: Identify the most relevant table from semantic matching
-  // This ensures the LLM uses the correct table (e.g., "Class" not "topics")
+  // CRITICAL: Use semantic understanding to detect exact columns from system catalog
+  // This is more reliable than relying on LLM prompts
+  let detectedColumns: { table: string; column: string; value?: string }[] = [];
   let topRelevantTable: string | null = null;
-  if (reducedMetadata.tables && reducedMetadata.tables.length > 0) {
-    // For simple queries like "show all classes", find table matching key concepts
-    const keyConceptsLower = questionUnderstanding.keyConcepts.map(c => c.toLowerCase());
-    const matchingTable = reducedMetadata.tables.find(table => {
+  
+  if (questionUnderstanding && reducedMetadata.tables && reducedMetadata.tables.length > 0) {
+    console.log(`[LLM-SERVICE] 🔍 Using semantic understanding to detect columns from system catalog...`);
+    
+    // Step 1: Find the most relevant table using semantic understanding
+    const { findRelevantTables } = await import('./semantic-matcher');
+    const { generateSchemaHash } = await import('./embedding-cache');
+    const schemaHash = generateSchemaHash(reducedMetadata);
+    const dataSourceId = (reducedMetadata as any).data_source_id;
+    
+    // CRITICAL: First try exact table matching by key concepts
+    // This ensures "school" matches "School" table, not "PreviousSchool"
+    const keyConceptsLower = questionUnderstanding.keyConcepts.map((c: string) => c.toLowerCase());
+    
+    // Find exact table matches first (prefer tables that match key concepts exactly)
+    const exactTableMatch = reducedMetadata.tables.find(table => {
       const tableNameLower = table.name.toLowerCase();
-      return keyConceptsLower.some(concept => 
-        tableNameLower.includes(concept) || 
-        concept.includes(tableNameLower) ||
-        tableNameLower === concept + 's' || // plural match
-        tableNameLower === concept.slice(0, -1) // singular match
-      );
+      return keyConceptsLower.some(concept => {
+        // Exact match: table name equals concept (singular or plural)
+        if (tableNameLower === concept || 
+            tableNameLower === concept + 's' ||
+            (concept.endsWith('s') && tableNameLower === concept.slice(0, -1))) {
+          return true;
+        }
+        // Partial match: table name contains concept BUT excludes "previous", "old", "history"
+        if (tableNameLower.includes(concept) && 
+            !tableNameLower.includes('previous') && 
+            !tableNameLower.includes('old') && 
+            !tableNameLower.includes('history')) {
+          return true;
+        }
+        return false;
+      });
     });
-    topRelevantTable = matchingTable?.name || reducedMetadata.tables[0]?.name || null;
+    
+    if (exactTableMatch) {
+      topRelevantTable = exactTableMatch.name;
+      console.log(`[LLM-SERVICE] ✅ Matched table by key concept: "${topRelevantTable}" (exact match)`);
+    } else {
+      // Fallback: Use semantic search, but filter out "Previous" tables when key concepts don't mention them
+      const tableMatches = await findRelevantTables(
+        questionUnderstanding.semanticSummary || userQuestion,
+        reducedMetadata,
+        5, // Top 5 tables to compare
+        schemaHash,
+        dataSourceId
+      );
+      
+      if (tableMatches.length > 0) {
+        // Filter out "Previous", "Old", "History" tables when key concepts don't include those words
+        const keyConceptsIncludePrevious = keyConceptsLower.some(c => 
+          c.includes('previous') || c.includes('old') || c.includes('history')
+        );
+        
+        const filteredMatches = tableMatches.filter(match => {
+          const tableNameLower = match.name.toLowerCase();
+          const hasPreviousWords = tableNameLower.includes('previous') || 
+                                  tableNameLower.includes('old') || 
+                                  tableNameLower.includes('history');
+          
+          // If key concepts don't mention "previous", prefer non-previous tables
+          if (!keyConceptsIncludePrevious && hasPreviousWords) {
+            return false; // Filter out previous tables
+          }
+          return true;
+        });
+        
+        // Use filtered matches if available, otherwise use original matches
+        const bestMatch = filteredMatches.length > 0 ? filteredMatches[0] : tableMatches[0];
+        topRelevantTable = bestMatch.name;
+        console.log(`[LLM-SERVICE] ✅ Detected table via semantic search: "${topRelevantTable}" (score: ${bestMatch.score.toFixed(3)})`);
+      }
+    }
+    
+    if (topRelevantTable) {
+      
+      // Step 2: Find relevant columns in this table using semantic search
+      const relevantTable = reducedMetadata.tables.find(t => t.name === topRelevantTable);
+      if (relevantTable) {
+        const { findRelevantColumns } = await import('./semantic-matcher');
+        const columnMatches = await findRelevantColumns(
+          questionUnderstanding.semanticSummary || userQuestion,
+          relevantTable,
+          10, // Top 10 columns
+          schemaHash
+        );
+        
+        console.log(`[LLM-SERVICE] ✅ Detected ${columnMatches.length} relevant columns:`);
+        columnMatches.forEach((match, idx) => {
+          console.log(`[LLM-SERVICE]   ${idx + 1}. ${match.name} (score: ${match.score.toFixed(3)})`);
+          detectedColumns.push({
+            table: topRelevantTable!,
+            column: match.name,
+          });
+        });
+      }
+    } else {
+      // Fallback: use first table
+      topRelevantTable = reducedMetadata.tables[0]?.name || null;
+    }
+  } else if (reducedMetadata.tables && reducedMetadata.tables.length > 0) {
+    // Fallback: use first table if no understanding available
+    topRelevantTable = reducedMetadata.tables[0]?.name || null;
   }
   
-  // Enhance prompt with semantic understanding and STRONG table/column name enforcement
+  // Step 3: Extract values from ORIGINAL question (more reliable than entities)
+  // CRITICAL: Extract complete values from user question directly to preserve multi-word values
+  const extractedValues: string[] = [];
+  
+  if (questionUnderstanding) {
+    // Method 1: Extract from semantic summary (if it has quoted values)
+    const quotedMatch = questionUnderstanding.semanticSummary.match(/['"]([^'"]+)['"]/);
+    if (quotedMatch) {
+      extractedValues.push(quotedMatch[1]);
+    }
+    
+    // Method 2: Extract from original question by removing action words and entity types
+    // Example: "show school Neha S" → "Neha S"
+    const actionWords = ['show', 'find', 'list', 'display', 'get', 'select', 'fetch', 'see', 'give'];
+    const entityTypes = questionUnderstanding.keyConcepts.map(c => c.toLowerCase());
+    
+    const questionWords = userQuestion.trim().split(/\s+/);
+    let valueStartIndex = -1;
+    
+    // Find where the actual value starts (after action words and entity types)
+    for (let i = 0; i < questionWords.length; i++) {
+      const word = questionWords[i].toLowerCase();
+      if (actionWords.includes(word) || entityTypes.includes(word)) {
+        valueStartIndex = i + 1;
+      }
+    }
+    
+    // Extract value from original question
+    if (valueStartIndex >= 0 && valueStartIndex < questionWords.length) {
+      const potentialValue = questionWords.slice(valueStartIndex).join(' ');
+      // Add if it's 2+ words (likely a multi-word value) or starts with capital (likely a name)
+      if (potentialValue.split(/\s+/).length >= 2 || 
+          (potentialValue.length > 0 && potentialValue[0] === potentialValue[0].toUpperCase() && 
+           !actionWords.includes(potentialValue.toLowerCase()) && 
+           !entityTypes.includes(potentialValue.toLowerCase()))) {
+        extractedValues.push(potentialValue);
+      }
+    }
+    
+    // Method 3: Also check entities (but prefer original question extraction)
+    questionUnderstanding.entities.forEach(entity => {
+      const words = entity.split(/\s+/);
+      if (words.length >= 2) {
+        const commonWords = ['school', 'student', 'teacher', 'class', 'name', 'table', 'college', 'graph', 'details'];
+        if (!commonWords.includes(entity.toLowerCase()) && !extractedValues.includes(entity)) {
+          extractedValues.push(entity);
+        }
+      }
+    });
+  }
+  
+  console.log(`[LLM-SERVICE] 📋 Extracted values from question: ${extractedValues.join(', ') || 'none'}`);
+  
+  // CRITICAL: Build query using detected columns from semantic search
+  // This is more reliable than relying on LLM prompts
+  let detectedQueryInfo = '';
+  if (topRelevantTable && detectedColumns.length > 0) {
+    const detectedColumnNames = detectedColumns.map(c => c.column).join(', ');
+    detectedQueryInfo = `\n\n**SEMANTIC SEARCH RESULTS (USE THESE EXACT COLUMNS FROM SYSTEM CATALOG)**:
+- Detected Table: "${topRelevantTable}" (found via semantic search from system catalog)
+- Detected Columns: ${detectedColumnNames} (found via semantic search from system catalog)
+- Extracted Values: ${extractedValues.length > 0 ? extractedValues.map(v => `'${v}'`).join(', ') : 'none'}
+
+**CRITICAL INSTRUCTIONS**:
+1. Use table "${topRelevantTable}" - this was detected via semantic search from system catalog
+2. Use columns: ${detectedColumnNames} - these were detected via semantic search from system catalog
+3. If extracted values exist, use them in WHERE clause: ${extractedValues.length > 0 ? `WHERE ${detectedColumns[0]?.column || 'column'} = '${extractedValues[0]}'` : 'no WHERE clause needed'}
+4. Do NOT use columns that were NOT detected - stick to the detected columns above
+5. Preserve complete values: ${extractedValues.length > 0 ? `Use '${extractedValues[0]}' as single value, do NOT split` : 'no values to preserve'}`;
+  }
+  
+  // Enhance prompt with semantic understanding and detected columns
   const columnNamesList = allColumnNames.slice(0, 100).join(', '); // Limit to first 100 to avoid token bloat
   const tableEmphasis = topRelevantTable 
-    ? `\n\n**CRITICAL TABLE SELECTION**: The user's question "${userQuestion}" is asking about "${questionUnderstanding.keyConcepts.join(', ')}". The MOST RELEVANT table is "${topRelevantTable}". Use table "${topRelevantTable}" in your query, NOT other tables.`
+    ? `\n\n**CRITICAL TABLE SELECTION**: The user's question "${userQuestion}" is asking about "${questionUnderstanding?.keyConcepts.join(', ') || 'data'}". The MOST RELEVANT table is "${topRelevantTable}" (detected via semantic search). Use table "${topRelevantTable}" in your query, NOT other tables.`
     : '';
   
-  const enhancedPrompt = MASTER_PROMPT_TEMPLATE
+  const semanticContext = questionUnderstanding
+    ? `\n\nSemantic Understanding:\n- Intent: ${questionUnderstanding.intent}\n- Query Type: ${questionUnderstanding.queryType}\n- Key Concepts: ${questionUnderstanding.keyConcepts.join(', ')}\n- Entities: ${questionUnderstanding.entities.join(', ')}\n- Semantic Summary: ${questionUnderstanding.semanticSummary}`
+    : '';
+  
+  // CRITICAL: Add value preservation instructions
+  const valuePreservationInstructions = extractedValues.length > 0
+    ? `\n\n**CRITICAL VALUE PRESERVATION RULES**:
+1. The user question contains these COMPLETE VALUES: ${extractedValues.map(v => `"${v}"`).join(', ')}
+2. These are SINGLE, COMPLETE values - do NOT split them into multiple parts
+3. Example: If user asks "show school Neha S", use WHERE schoolName = 'Neha S' ✅
+4. WRONG: WHERE schoolName = 'Neha' AND class = 'S' ❌ (DO NOT DO THIS!)
+5. If a value has multiple words (like "Neha S" or "MDU College"), preserve it as a SINGLE string literal
+6. Use the EXACT value from the user question in WHERE clauses, do NOT split multi-word values`
+    : '';
+
+  const prompt = MASTER_PROMPT_TEMPLATE
     .replace('{MODE}', 'ADHOC_QUERY')
     .replace('{DATA_SOURCE_METADATA}', formatMetadata(reducedMetadata))
-    .replace('{USER_QUESTION}', `${userQuestion}\n\nSemantic Understanding:\n- Intent: ${questionUnderstanding.intent}\n- Query Type: ${questionUnderstanding.queryType}\n- Key Concepts: ${questionUnderstanding.keyConcepts.join(', ')}\n- Entities: ${questionUnderstanding.entities.join(', ')}\n- Semantic Summary: ${questionUnderstanding.semanticSummary}${tableEmphasis}\n\n**CRITICAL COLUMN NAME RULES**:\n1. Use ONLY these exact column names: ${columnNamesList}${allColumnNames.length > 100 ? ' (and more - see metadata above)' : ''}\n2. Do NOT invent column names. If you need "class name" but see "currentClass" in the list above, use "currentClass" exactly.\n3. Check the metadata tables above for the EXACT column name before using it.\n4. If the user asks for something that doesn't exist, use the closest matching column from the list above.`);
-  
-  const prompt = enhancedPrompt;
+    .replace('{USER_QUESTION}', `${userQuestion}${semanticContext}${detectedQueryInfo}${tableEmphasis}${valuePreservationInstructions}\n\n**CRITICAL COLUMN NAME RULES**:\n1. Use ONLY these exact column names: ${columnNamesList}${allColumnNames.length > 100 ? ' (and more - see metadata above)' : ''}\n2. Do NOT invent column names. If you need "class name" but see "currentClass" in the list above, use "currentClass" exactly.\n3. Check the metadata tables above for the EXACT column name before using it.\n4. If the user asks for something that doesn't exist, use the closest matching column from the list above.`);
 
   const response = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
     messages: [
       {
         role: 'system',
-        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. **CRITICAL RULES - READ CAREFULLY:**\n\n1) **TABLE SELECTION IS CRITICAL**: If the prompt mentions "MOST RELEVANT table", you MUST use that exact table name. Do NOT use other tables. For example, if prompt says "Use table Class", then use "Class" not "topics" or any other table.\n\n2) **NEVER INVENT COLUMN NAMES** - You MUST ONLY use column names that are EXPLICITLY listed in the metadata provided. If a column does not exist in the metadata, DO NOT use it. Check the metadata tables and columns carefully before using any column name.\n\n3) **COLUMN NAME MATCHING**: When the user asks about something (e.g., "class name"), look for the EXACT column name in the metadata. Common patterns:\n   - "class name" → look for columns like "className", "class_name", "currentClass", "current_class"\n   - "fee" → look for columns like "feeAmount", "fee_amount", "totalFee", "total_fee"\n   - If you see "className" in metadata, use "className". If you see "currentClass", use "currentClass". NEVER invent variations.\n\n4) **VERIFY BEFORE USING**: Before using ANY column name:\n   - Search the metadata tables for that EXACT column name\n   - If not found, look for similar names (e.g., "className" vs "currentClass")\n   - Use the EXACT column name from metadata, not a variation you invent\n   - If no match exists, use the closest matching column that DOES exist\n\n5) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR() - this ensures charts show multiple data points.\n\n6) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function.\n\n7) For "differences", "compare", "versus", "vs", "measure differences" questions: Group by ALL dimensions mentioned (e.g., "income bracket differences between parties" → GROUP BY income_bracket, party_affiliation) to enable comparison.\n\n8) **AVOID DUPLICATE ROWS**: When using JOINs, prefer exact matches (e.g., "ON table1.id = table2.id") over LIKE patterns. If you must use LIKE or the query might return duplicates, add DISTINCT or use GROUP BY with aggregations to eliminate duplicates.\n\n**REMEMBER**: The metadata contains the EXACT table and column names. Use them EXACTLY as shown. Never invent or guess names. Always return valid JSON only.',
+        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. **CRITICAL RULES - READ CAREFULLY:**\n\n1) **TABLE SELECTION IS CRITICAL**: If the prompt mentions "MOST RELEVANT table", you MUST use that exact table name. Do NOT use other tables. For example, if prompt says "Use table School", then use "School" not "PreviousSchool" or any other table. If user asks about "school", prefer "School" table over "PreviousSchool" unless explicitly asking about previous/old data.\n\n2) **VALUE PRESERVATION IS CRITICAL**: If the user question contains multi-word values (e.g., "Neha S", "MDU College", "John Smith"), preserve them as SINGLE, COMPLETE values in WHERE clauses.\n   - CORRECT: WHERE schoolName = \'Neha S\' ✅\n   - WRONG: WHERE schoolName = \'Neha\' AND class = \'S\' ❌\n   - WRONG: WHERE schoolName = \'Neha\' ❌ (missing part of value)\n   - If the prompt mentions "Extracted Values", use those EXACT values as single string literals\n   - NEVER split multi-word values into multiple conditions\n   - NEVER truncate values - use the complete value from the user question\n\n3) **NEVER INVENT COLUMN NAMES** - You MUST ONLY use column names that are EXPLICITLY listed in the metadata provided. If a column does not exist in the metadata, DO NOT use it. Check the metadata tables and columns carefully before using any column name.\n\n4) **COLUMN NAME MATCHING**: When the user asks about something (e.g., "class name"), look for the EXACT column name in the metadata. Common patterns:\n   - "class name" → look for columns like "className", "class_name", "currentClass", "current_class"\n   - "fee" → look for columns like "feeAmount", "fee_amount", "totalFee", "total_fee"\n   - If you see "className" in metadata, use "className". If you see "currentClass", use "currentClass". NEVER invent variations.\n\n5) **VERIFY BEFORE USING**: Before using ANY column name:\n   - Search the metadata tables for that EXACT column name\n   - If not found, look for similar names (e.g., "className" vs "currentClass")\n   - Use the EXACT column name from metadata, not a variation you invent\n   - If no match exists, use the closest matching column that DOES exist\n\n6) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR() - this ensures charts show multiple data points.\n\n7) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function.\n\n8) For "differences", "compare", "versus", "vs", "measure differences" questions: Group by ALL dimensions mentioned (e.g., "income bracket differences between parties" → GROUP BY income_bracket, party_affiliation) to enable comparison.\n\n9) **AVOID DUPLICATE ROWS**: When using JOINs, prefer exact matches (e.g., "ON table1.id = table2.id") over LIKE patterns. If you must use LIKE or the query might return duplicates, add DISTINCT or use GROUP BY with aggregations to eliminate duplicates.\n\n**REMEMBER**: The metadata contains the EXACT table and column names. Use them EXACTLY as shown. Never invent or guess names. Preserve complete values from user questions. Always return valid JSON only.',
       },
       {
         role: 'user',
@@ -643,7 +844,18 @@ export async function generateAdhocQuery(
     throw new Error('No response from LLM');
   }
 
-  const result = JSON.parse(content) as AdhocQueryResponse;
+  let result = JSON.parse(content) as AdhocQueryResponse;
+  
+  // CRITICAL: Post-process query to fix incorrectly split values
+  // Example: "Neha S" should not become WHERE column1 = 'Neha' AND column2 = 'S'
+  if (result.query_content && questionUnderstanding && extractedValues.length > 0) {
+    result.query_content = postProcessQueryForSplitValues(
+      result.query_content,
+      userQuestion,
+      extractedValues,
+      questionUnderstanding
+    );
+  }
   
   // Validate that the query uses columns that exist in metadata
   if (result.query_content && reducedMetadata.tables) {
@@ -731,6 +943,75 @@ export async function generateDashboardMetrics(
   }
 
   return JSON.parse(content) as DashboardMetricsResponse;
+}
+
+/**
+ * Post-process SQL query to fix incorrectly split values
+ * Example: "Neha S" should not become WHERE column1 = 'Neha' AND column2 = 'S'
+ */
+function postProcessQueryForSplitValues(
+  query: string,
+  userQuestion: string,
+  extractedValues: string[],
+  questionUnderstanding: {
+    intent: string;
+    keyConcepts: string[];
+    entities: string[];
+    queryType: string;
+    semanticSummary: string;
+  }
+): string {
+  if (extractedValues.length === 0) return query;
+  
+  // Find multi-word values that might have been split
+  for (const value of extractedValues) {
+    if (value.split(/\s+/).length >= 2) {
+      const words = value.split(/\s+/);
+      const firstWord = words[0];
+      const lastWord = words[words.length - 1];
+      
+      // Pattern 1: WHERE column1 = 'word1' AND column2 = 'word2'
+      // Should be: WHERE column1 = 'word1 word2'
+      const splitPattern1 = new RegExp(
+        `(\\w+)\\s*=\\s*['"]${firstWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]\\s+AND\\s+(\\w+)\\s*=\\s*['"]${lastWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`,
+        'gi'
+      );
+      
+      if (splitPattern1.test(query)) {
+        // Find the first column name before the split
+        const columnMatch = query.match(new RegExp(`(\\w+)\\s*=\\s*['"]${firstWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`, 'i'));
+        if (columnMatch) {
+          const columnName = columnMatch[1];
+          // Replace split conditions with single condition
+          query = query.replace(
+            splitPattern1,
+            `${columnName} = '${value}'`
+          );
+          console.log(`[LLM-SERVICE] 🔧 Fixed split value: "${value}" → "${columnName} = '${value}'"`);
+          continue;
+        }
+      }
+      
+      // Pattern 2: WHERE column = 'word1' (missing rest of value)
+      // Check if query only has first word but value has more words
+      const incompletePattern = new RegExp(
+        `(\\w+)\\s*=\\s*['"]${firstWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`,
+        'gi'
+      );
+      
+      const incompleteMatch = query.match(incompletePattern);
+      if (incompleteMatch && !query.includes(value)) {
+        // Replace incomplete value with complete value
+        query = query.replace(
+          incompletePattern,
+          `${incompleteMatch[1]} = '${value}'`
+        );
+        console.log(`[LLM-SERVICE] 🔧 Fixed incomplete value: "${firstWord}" → "${value}"`);
+      }
+    }
+  }
+  
+  return query;
 }
 
 /**
@@ -823,7 +1104,14 @@ Return ONLY valid JSON, no explanations:`;
 export async function generateAdhocQueryWithLangGraphAgent(
   userQuestion: string,
   metadata: DataSourceMetadata,
-  connectionString?: string
+  connectionString?: string,
+  questionUnderstanding?: {
+    intent: string;
+    keyConcepts: string[];
+    entities: string[];
+    queryType: string;
+    semanticSummary: string;
+  } | null
 ): Promise<AdhocQueryResponse> {
   try {
     // Dynamic import to avoid errors if LangGraph not installed
@@ -832,11 +1120,22 @@ export async function generateAdhocQueryWithLangGraphAgent(
 
     console.log('[LLM-SERVICE] Using LangGraph agent for query generation');
 
-    // STEP 1: Understand question semantics FIRST (like semantic search)
-    const questionUnderstanding = await understandQuestionSemantics(userQuestion);
-    
-    // Enhance user question with semantic understanding for better matching
-    const enhancedQuestion = `${questionUnderstanding.semanticSummary}\n\nIntent: ${questionUnderstanding.intent}\nKey Concepts: ${questionUnderstanding.keyConcepts.join(', ')}`;
+    // CRITICAL: Understand question if not provided (for better accuracy)
+    // Question understanding helps generate accurate queries by identifying intent, key concepts, and entities
+    if (!questionUnderstanding) {
+      try {
+        console.log(`[LLM-SERVICE] 🧠 Understanding question semantics: "${userQuestion}"`);
+        questionUnderstanding = await understandQuestionSemantics(userQuestion);
+        console.log(`[LLM-SERVICE] ✅ Question understanding complete:`, {
+          intent: questionUnderstanding.intent,
+          queryType: questionUnderstanding.queryType,
+          keyConcepts: questionUnderstanding.keyConcepts?.slice(0, 3).join(', '),
+        });
+      } catch (error) {
+        console.warn(`[LLM-SERVICE] ⚠️ Question understanding failed, proceeding without it:`, error);
+        questionUnderstanding = null;
+      }
+    }
 
     // OPTIMIZATION: Metadata is already refreshed by API route - don't refresh again!
     // This prevents redundant system catalog queries and semantic matching
@@ -855,12 +1154,12 @@ export async function generateAdhocQueryWithLangGraphAgent(
         
         reducedMetadata = await getHybridMetadata({
           dataSourceId,
-          userQuestion: enhancedQuestion,
+          userQuestion: userQuestion, // Use question directly
           maxTables: 30, // Reduced from 50 for faster processing
           useSystemCatalog: true,
           useSemanticSearch: true,
           includeStatistics: false,
-          forceRefresh: true,
+          forceRefresh: false, // Use cache (faster)
         });
         
         console.log(`[LLM-SERVICE] ✅ Metadata refreshed for agent: ${reducedMetadata.tables?.length || 0} tables`);
@@ -879,6 +1178,11 @@ export async function generateAdhocQueryWithLangGraphAgent(
     
     console.log(`[LLM-SERVICE] 📊 Metadata size check: ${tokenCount} tokens, Safe: ${isSafe ? '✅' : '❌'} (${reducedMetadata.tables?.length || 0} tables, ${totalColumns} columns)`);
     
+    // Enhance user question with semantic understanding for better matching
+    const enhancedQuestion = questionUnderstanding
+      ? `${questionUnderstanding.semanticSummary}\n\nIntent: ${questionUnderstanding.intent}\nKey Concepts: ${questionUnderstanding.keyConcepts.join(', ')}`
+      : userQuestion;
+    
     // If metadata is safe, use system catalog metadata as-is (no semantic filtering needed)
     if (isSafe) {
       console.log(`[LLM-SERVICE] ✅ Metadata size is safe, using system catalog metadata as-is (no semantic filtering needed)`);
@@ -895,8 +1199,8 @@ export async function generateAdhocQueryWithLangGraphAgent(
     }
 
     // Execute agent workflow (agent will further explore schema if needed)
-    // Pass both original question and understanding to agent
-    const query = await agent.execute(userQuestion, reducedMetadata, connectionString, questionUnderstanding);
+    // Pass enhanced question with semantic understanding for better accuracy
+    const query = await agent.execute(userQuestion, reducedMetadata, connectionString, questionUnderstanding || undefined);
 
     // Generate insight summary
     const insightPrompt = `Explain what this SQL query does and what insights it provides:\n\n${query}\n\nQuestion: ${userQuestion}`;
@@ -1103,15 +1407,25 @@ async function reduceMetadataForAdhocQuery(
   const totalColumns = allTables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
   const isCSV = metadata.source_type === 'CSV_FILE';
   
+  // OPTIMIZATION: Skip semantic matching if metadata is already small/filtered
+  // If <= 30 tables, metadata is likely already filtered by getHybridMetadata
+  const isAlreadyFiltered = allTables.length <= 30;
+  
   // For CSV files: use semantic matching if many columns (>15) - helps find relevant columns within single table
-  // For SQL databases: use semantic matching if many tables (>5) or many columns (>50)
-  // For large databases (20+ tables), ALWAYS use semantic matching for better accuracy
-  const shouldUseSemanticMatching = isCSV 
+  // For SQL databases: use semantic matching ONLY if many tables (>30) or many columns (>50)
+  // Skip if already filtered (metadata from getHybridMetadata with semantic search)
+  const shouldUseSemanticMatching = !isAlreadyFiltered && (
+    isCSV 
     ? totalColumns > 15 
-    : allTables.length > 5 || totalColumns > 50 || allTables.length > 20;
+      : allTables.length > 30 || totalColumns > 50
+  );
   
   if (!shouldUseSemanticMatching) {
+    if (isAlreadyFiltered) {
+      console.log(`[LLM-SERVICE] ⚡ Metadata already filtered (${allTables.length} tables) - skipping redundant semantic reduction`);
+    } else {
     console.log(`[LLM-SERVICE] ℹ️ Schema is small enough (${allTables.length} tables, ${totalColumns} columns), skipping semantic reduction`);
+    }
     return metadata;
   }
   

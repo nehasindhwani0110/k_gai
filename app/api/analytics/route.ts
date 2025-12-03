@@ -52,96 +52,103 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // SIMPLIFIED: Always fetch fresh metadata from system catalog
-      // Don't trust frontend metadata - it might be stale
+      // OPTIMIZED: Fetch fresh metadata efficiently using semantic search FIRST
       // Get data_source_id from metadata or connection_string
       const dataSourceId = (body.metadata as any)?.data_source_id;
       const connectionString = (body as any).connection_string;
       
       let freshMetadata = body.metadata;
       
-      // STEP 1: Understand question semantics FIRST (like semantic search)
-      // This guides which tables/columns to fetch from system catalog
+      // CRITICAL: Understand question FIRST (parallel with metadata fetching for efficiency)
+      // Question understanding helps generate accurate queries by identifying intent, key concepts, and entities
       let questionUnderstanding: any = null;
-      if (dataSourceId && body.metadata?.source_type === 'SQL_DB') {
-        try {
-          console.log(`[API] 🧠 Step 1: Understanding question semantics FIRST`);
-          const { understandQuestionSemantics } = await import('@/analytics-engine/services/llm-service');
-          questionUnderstanding = await understandQuestionSemantics(body.user_question);
-          
-          console.log(`[API] ✅ Question understanding:`);
-          console.log(`[API]   Intent: ${questionUnderstanding.intent}`);
-          console.log(`[API]   Key Concepts: ${questionUnderstanding.keyConcepts.join(', ')}`);
-          console.log(`[API]   Entities: ${questionUnderstanding.entities.join(', ')}`);
-        } catch (error) {
-          console.warn(`[API] ⚠️ Question understanding failed, proceeding without it:`, error);
-        }
-      }
       
-      // STEP 2: Use semantic understanding to guide system catalog query
-      // Fetch fresh metadata from system catalog, filtered by semantic understanding
+      // OPTIMIZATION: For SQL databases, fetch metadata with smart filtering
+      // Run question understanding in parallel with metadata fetching to save time
       if (dataSourceId && body.metadata?.source_type === 'SQL_DB') {
         try {
-          console.log(`[API] 🔄 Step 2: Fetching fresh metadata from system catalog (guided by semantic understanding)`);
+          console.log(`[API] 🧠 Step 1: Understanding question semantics AND fetching metadata (parallel)`);
           const { getHybridMetadata } = await import('@/analytics-engine/services/hybrid-metadata-service');
           const { estimateMetadataTokens, isMetadataSizeSafe } = await import('@/analytics-engine/utils/token-counter');
+          const { understandQuestionSemantics } = await import('@/analytics-engine/services/llm-service');
           const model = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
           
-          // Build enhanced question from semantic understanding
-          const enhancedQuestion = questionUnderstanding 
-            ? `${questionUnderstanding.semanticSummary}\n\nIntent: ${questionUnderstanding.intent}\nKey Concepts: ${questionUnderstanding.keyConcepts.join(', ')}\nEntities: ${questionUnderstanding.entities.join(', ')}`
-            : body.user_question;
+          // PARALLEL: Understand question AND fetch metadata simultaneously
+          const [qUnderstanding, initialMetadata] = await Promise.all([
+            understandQuestionSemantics(body.user_question).catch(error => {
+              console.warn(`[API] ⚠️ Question understanding failed, proceeding without it:`, error);
+              return null;
+            }),
+            (async () => {
+              // OPTIMIZATION: Use semantic search FIRST, then fetch only relevant tables
+              // This avoids fetching ALL tables when we only need a few
+              // For small databases (<30 tables), skip semantic search (fast enough)
+              const tableCount = body.metadata?.tables?.length || 0;
+              const useSemanticFiltering = tableCount > 30; // Only for large databases
+              
+              if (useSemanticFiltering) {
+                console.log(`[API] 🎯 Large database (${tableCount} tables) - using semantic search to filter`);
+                // Semantic search FIRST, then fetch only relevant tables (optimized path)
+                return await getHybridMetadata({
+                  dataSourceId,
+                  userQuestion: body.user_question, // Use question directly for semantic search
+                  maxTables: 30, // Limit to top 30 relevant tables
+                  useSystemCatalog: true,
+                  useSemanticSearch: true, // This triggers optimized path: semantic search FIRST
+                  includeStatistics: false,
+                  forceRefresh: false, // Use cache if available (faster)
+                });
+              } else {
+                // Small database - fetch all tables directly (fast, no semantic search needed)
+                console.log(`[API] ⚡ Small database (${tableCount} tables) - fetching all tables directly`);
+                return await getHybridMetadata({
+                  dataSourceId,
+                  userQuestion: undefined, // No question = get all tables
+                  maxTables: 1000,
+                  useSystemCatalog: true,
+                  useSemanticSearch: false, // Skip semantic search for small DBs
+                  includeStatistics: false,
+                  forceRefresh: false, // Use cache (faster)
+                });
+              }
+            })().catch(error => {
+              console.warn(`[API] ⚠️ Failed to fetch metadata, using provided metadata:`, error);
+              return body.metadata;
+            }),
+          ]);
           
-          // Step 2a: Get ALL tables from system catalog first (no semantic filtering)
-          let systemCatalogMetadata = await getHybridMetadata({
-            dataSourceId,
-            userQuestion: undefined, // No question = get all tables
-            maxTables: 1000, // Get ALL tables
-            useSystemCatalog: true, // Use system catalog (always fresh)
-            useSemanticSearch: false, // NO semantic search - just get all tables
-            includeStatistics: false,
-            forceRefresh: true, // Always fresh
-          });
+          questionUnderstanding = qUnderstanding;
+          freshMetadata = initialMetadata;
           
-          const tokenCount = estimateMetadataTokens(systemCatalogMetadata);
-          const isSafe = isMetadataSizeSafe(systemCatalogMetadata, model);
-          
-          console.log(`[API] 📊 System catalog: ${systemCatalogMetadata.tables?.length || 0} tables, ${tokenCount} tokens, Safe: ${isSafe ? '✅' : '❌'}`);
-          
-          // Step 2b: Use semantic search ONLY if metadata is too large OR if we have semantic understanding
-          if (!isSafe || questionUnderstanding) {
-            console.log(`[API] 🎯 Using semantic understanding to filter metadata`);
-            freshMetadata = await getHybridMetadata({
-              dataSourceId,
-              userQuestion: enhancedQuestion, // Use semantic understanding to guide filtering
-              maxTables: 30, // Limit tables based on semantic relevance
-              useSystemCatalog: true, // Still use system catalog (fresh data)
-              useSemanticSearch: true, // Use semantic search to filter
-              includeStatistics: false,
-              forceRefresh: true,
-            });
-            console.log(`[API] ✅ Semantically-filtered metadata: ${freshMetadata.tables?.length || 0} tables`);
-          } else {
-            // Metadata is safe - use system catalog metadata as-is (all tables, no filtering)
-            freshMetadata = systemCatalogMetadata;
-            console.log(`[API] ✅ Using system catalog metadata as-is (all ${systemCatalogMetadata.tables?.length || 0} tables - no filtering needed)`);
-          }
+          // Check if metadata is safe for LLM (if not, semantic matching will reduce it further)
+          const tokenCount = estimateMetadataTokens(freshMetadata);
+          const isSafe = isMetadataSizeSafe(freshMetadata, model);
+          console.log(`[API] ✅ Question understanding complete:`, questionUnderstanding ? {
+            intent: questionUnderstanding.intent,
+            queryType: questionUnderstanding.queryType,
+            keyConcepts: questionUnderstanding.keyConcepts?.slice(0, 3).join(', '),
+          } : 'skipped');
+          console.log(`[API] 📊 Metadata: ${freshMetadata.tables?.length || 0} tables, ${tokenCount} tokens, Safe: ${isSafe ? '✅' : '⚠️ (will be reduced by semantic matching)'}`);
           
           // Ensure data_source_id is preserved
           freshMetadata.data_source_id = dataSourceId;
-          
-          // Log table and column counts to verify fresh data
-          const totalColumns = freshMetadata.tables?.reduce((sum, t) => sum + (t.columns?.length || 0), 0) || 0;
-          console.log(`[API] ✅ Final metadata: ${freshMetadata.tables?.length || 0} tables, ${totalColumns} columns`);
-          
-          // Log sample table names to verify we're getting fresh schema
-          if (freshMetadata.tables && freshMetadata.tables.length > 0) {
-            const sampleTables = freshMetadata.tables.slice(0, 5).map(t => t.name);
-            console.log(`[API] 📋 Sample tables: ${sampleTables.join(', ')}`);
-          }
         } catch (error) {
           console.warn(`[API] ⚠️ Failed to fetch fresh metadata, using provided metadata:`, error);
           // Continue with provided metadata if refresh fails
+        }
+      } else {
+        // For non-SQL sources, still understand the question
+        try {
+          console.log(`[API] 🧠 Understanding question semantics`);
+          const { understandQuestionSemantics } = await import('@/analytics-engine/services/llm-service');
+          questionUnderstanding = await understandQuestionSemantics(body.user_question);
+          console.log(`[API] ✅ Question understanding complete:`, {
+            intent: questionUnderstanding.intent,
+            queryType: questionUnderstanding.queryType,
+            keyConcepts: questionUnderstanding.keyConcepts?.slice(0, 3).join(', '),
+          });
+        } catch (error) {
+          console.warn(`[API] ⚠️ Question understanding failed, proceeding without it:`, error);
         }
       }
 
@@ -170,7 +177,8 @@ export async function POST(request: NextRequest) {
             result = await generateAdhocQueryWithLangGraphAgent(
               body.user_question,
               freshMetadata, // Use fresh metadata
-              connectionString
+              connectionString,
+              questionUnderstanding // Pass question understanding for better accuracy
             );
           } catch (error) {
             console.warn('[API] LangGraph agent failed, trying Python agent:', error);
@@ -193,7 +201,8 @@ export async function POST(request: NextRequest) {
             result = await generateAdhocQuery(
               body.user_question,
               freshMetadata, // Use fresh metadata
-              connectionString
+              connectionString,
+              questionUnderstanding // Pass question understanding for better accuracy
             );
           }
         } else if (!result) {
@@ -201,15 +210,18 @@ export async function POST(request: NextRequest) {
           result = await generateAdhocQuery(
             body.user_question,
             freshMetadata, // Use fresh metadata
-            connectionString
+            connectionString,
+            questionUnderstanding // Pass question understanding for better accuracy
           );
         }
       } else {
         // Use original direct LLM method
         result = await generateAdhocQuery(
-        body.user_question,
-        freshMetadata // Use fresh metadata
-      );
+          body.user_question,
+          freshMetadata, // Use fresh metadata
+          connectionString,
+          questionUnderstanding // Pass question understanding for better accuracy
+        );
       }
 
       // Validate generated SQL query if it's SQL_QUERY type

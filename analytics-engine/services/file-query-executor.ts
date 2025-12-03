@@ -266,11 +266,20 @@ function executeCSVQueryOnRecords(records: any[], query: string): any[] {
     });
   }
   
-  // Parse LIMIT
+  // Parse LIMIT and enforce maximum
+  const MAX_RESULT_ROWS = 10000;
   const limitMatch = query.match(/LIMIT\s+(\d+)/i);
   if (limitMatch) {
-    const limit = parseInt(limitMatch[1], 10);
+    let limit = parseInt(limitMatch[1], 10);
+    // Enforce maximum result limit
+    if (limit > MAX_RESULT_ROWS) {
+      console.warn(`[FILE-QUERY] ⚠️ LIMIT ${limit} exceeds maximum ${MAX_RESULT_ROWS}, enforcing limit`);
+      limit = MAX_RESULT_ROWS;
+    }
     filteredRecords = filteredRecords.slice(0, limit);
+  } else {
+    // No LIMIT specified - enforce default maximum
+    filteredRecords = filteredRecords.slice(0, MAX_RESULT_ROWS);
   }
   
   return filteredRecords;
