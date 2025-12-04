@@ -83,8 +83,34 @@ export default function LineChart({ data, title }: LineChartProps) {
   }
 
   const keys = Object.keys(data[0] || {});
-  let categoryKey = keys[0] || 'category';
-  let valueKey = keys[1] || 'value';
+  
+  // CRITICAL: Prefer name/label columns (added by enrichment) over IDs
+  const nameLabelColumns = keys.filter(k => {
+    const lower = k.toLowerCase();
+    return lower.includes('_name') || lower.includes('_label') || lower.includes('_formatted') || 
+           lower === 'name'; // Direct name column
+  });
+  
+  // CRITICAL: Detect ID columns and find corresponding name columns
+  const idColumns = keys.filter(k => {
+    const lower = k.toLowerCase();
+    const sampleValue = data[0]?.[k];
+    const isUUID = sampleValue && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(sampleValue));
+    return lower.endsWith('_id') || lower.endsWith('id') || isUUID;
+  });
+  
+  // For each ID column, check if there's a corresponding _name column
+  const idToNameMapping = new Map<string, string>();
+  idColumns.forEach(idCol => {
+    const nameCol = keys.find(k => {
+      const lower = k.toLowerCase();
+      const idColBase = idCol.toLowerCase().replace(/_id$/, '').replace(/id$/, '');
+      return (lower === `${idColBase}_name` || lower === `${idColBase}name` || lower === 'name') && k !== idCol;
+    });
+    if (nameCol) {
+      idToNameMapping.set(idCol, nameCol);
+    }
+  });
 
   // Improved column detection - check multiple rows
   const sampleSize = Math.min(5, data.length);
@@ -97,6 +123,17 @@ export default function LineChart({ data, title }: LineChartProps) {
       }
     }
     return numericCount > sampleSize / 2;
+  });
+  
+  const stringCols = keys.filter(key => {
+    let stringCount = 0;
+    for (let i = 0; i < sampleSize; i++) {
+      const val = data[i]?.[key];
+      if (val !== null && val !== undefined && typeof val === 'string' && isNaN(Number(val)) && val !== '') {
+        stringCount++;
+      }
+    }
+    return stringCount > sampleSize / 2;
   });
 
   const categoryPatterns = ['date', 'time', 'year', 'month', 'day', 'week', 'quarter', 'period', 'name', 'category', 'label', 'group', 'type'];
@@ -133,24 +170,51 @@ export default function LineChart({ data, title }: LineChartProps) {
     return false;
   });
   
+  // CRITICAL: ALWAYS prefer name/label columns - NEVER use IDs
+  let categoryKey: string;
   if (timeKey) {
     categoryKey = timeKey;
-    // Find value column excluding the time key
-    valueKey = numericCols.find(k => k !== timeKey) || numericCols[0] || keys.find(k => k !== timeKey) || keys[1];
+  } else if (nameLabelColumns.length > 0) {
+    // Use enriched name columns first
+    categoryKey = nameLabelColumns[0];
   } else {
-    // Try to identify by column name patterns
-    for (const key of keys) {
-      const lowerKey = key.toLowerCase();
-      if (categoryPatterns.some(p => lowerKey.includes(p))) {
-        // Check if it's not numeric
-        const isNumeric = numericCols.includes(key);
-        if (!isNumeric || (isNumeric && keys.length === 2)) {
-          categoryKey = key;
-          break;
+    // Check if we have ID columns with corresponding name columns
+    const idWithName = Array.from(idToNameMapping.values())[0];
+    if (idWithName) {
+      categoryKey = idWithName;
+    } else {
+      // Filter out ID columns from string columns
+      const nonIdStringCols = stringCols.filter(k => {
+        const lower = k.toLowerCase();
+        const sampleValue = data[0]?.[k];
+        const isUUID = sampleValue && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(sampleValue));
+        return !lower.endsWith('_id') && !lower.endsWith('id') && !isUUID;
+      });
+      
+      // Try to identify by column name patterns (excluding IDs)
+      let foundKey = false;
+      for (const key of keys) {
+        const lowerKey = key.toLowerCase();
+        const isNotId = !lowerKey.endsWith('_id') && !lowerKey.endsWith('id');
+        if (categoryPatterns.some(p => lowerKey.includes(p)) && isNotId) {
+          // Check if it's not numeric
+          const isNumeric = numericCols.includes(key);
+          if (!isNumeric || (isNumeric && keys.length === 2)) {
+            categoryKey = key;
+            foundKey = true;
+            break;
+          }
         }
+      }
+      
+      if (!foundKey) {
+        categoryKey = nonIdStringCols.length > 0 ? nonIdStringCols[0] : (stringCols.length > 0 ? stringCols[0] : keys[0] || 'category');
       }
     }
   }
+  
+  // Find value column excluding the category key
+  let valueKey = numericCols.find(k => k !== categoryKey) || numericCols[0] || keys.find(k => k !== categoryKey) || keys[1] || 'value';
   
   // Find value column by name patterns or numeric type
   const valueKeyByName = keys.find(key => {

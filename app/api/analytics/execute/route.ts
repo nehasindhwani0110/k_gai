@@ -4,6 +4,8 @@ import { executeFileQuery } from '@/analytics-engine/services/file-query-executo
 import { QueryType, SourceType } from '@/analytics-engine/types';
 import * as path from 'path';
 import { prisma } from '@/lib/prisma';
+import { enrichQueryResults } from '@/analytics-engine/services/data-enrichment';
+import { getHybridMetadata } from '@/analytics-engine/services/hybrid-metadata-service';
 
 interface ExecuteRequest {
   query_type: QueryType;
@@ -196,6 +198,38 @@ export async function POST(request: NextRequest) {
           dataSourceId || body.data_source_id,
           body.user_question
         );
+        
+        // CRITICAL: Enrich results with names when IDs are detected
+        if (results && results.length > 0 && body.connection_string) {
+          try {
+            // Get metadata for enrichment (try to get it, but don't fail if we can't)
+            let metadata: any = null;
+            try {
+              if (dataSourceId || body.data_source_id) {
+                metadata = await getHybridMetadata({
+                  connectionString: body.connection_string,
+                  dataSourceId: dataSourceId || body.data_source_id,
+                  userQuestion: body.user_question,
+                  useSemanticSearch: false, // Don't filter for enrichment
+                });
+              }
+            } catch (metadataError) {
+              console.warn('[EXECUTE] ⚠️ Could not fetch metadata for enrichment, will try direct queries:', metadataError);
+            }
+            
+            // Enrich results with names (works with or without metadata)
+            results = await enrichQueryResults(
+              results,
+              metadata || { tables: [], source_type: 'SQL_DB' }, // Provide minimal metadata if not available
+              queryToExecute,
+              body.connection_string
+            );
+            console.log('[EXECUTE] ✅ Data enrichment complete - IDs replaced with names where possible');
+          } catch (enrichError) {
+            console.warn('[EXECUTE] ⚠️ Data enrichment failed, returning original results:', enrichError);
+            // Continue with original results if enrichment fails
+          }
+        }
       }
     } else if (body.query_type === 'QUERY_LOGIC') {
       if (!body.file_path) {

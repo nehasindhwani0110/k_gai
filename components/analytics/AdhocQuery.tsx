@@ -9,6 +9,7 @@ import QueryHistory from './QueryHistory';
 import { autoSelectVisualizationType } from '@/analytics-engine/services/visualization-selector';
 import { VisualizationType } from '@/analytics-engine/types';
 import EnhancedDataModal from './EnhancedDataModal';
+import VisualizationTypeSelector from './VisualizationTypeSelector';
 
 interface AdhocQueryProps {
   metadata: any;
@@ -21,6 +22,7 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
   const [result, setResult] = useState<AdhocQueryResponse | null>(null);
   const [queryResults, setQueryResults] = useState<any[]>([]);
   const [showDataModal, setShowDataModal] = useState(false);
+  const [selectedVizType, setSelectedVizType] = useState<VisualizationType | null>(null);
 
   const handleQuestionSelect = (selectedQuestion: string) => {
     setQuestion(selectedQuestion);
@@ -63,6 +65,7 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
 
       const data: AdhocQueryResponse = await response.json();
       setResult(data);
+      setSelectedVizType(null); // Reset visualization type selection for new query
 
       // Execute the query if needed
       if (data.query_content) {
@@ -296,7 +299,30 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
           </div>
 
           <div className="bg-blue-50 p-4 rounded-lg">
-            <h3 className="font-semibold mb-2">Insight:</h3>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-semibold">Insight:</h3>
+              {queryResults.length > 0 && (
+                <VisualizationTypeSelector
+                  currentType={selectedVizType || (() => {
+                    let vizType: VisualizationType = result.visualization_type as VisualizationType;
+                    if (vizType === 'auto' || !vizType) {
+                      vizType = autoSelectVisualizationType(
+                        queryResults, 
+                        result.query_content || '', 
+                        question
+                      );
+                    }
+                    if (vizType === 'auto') {
+                      vizType = 'table';
+                    }
+                    return vizType;
+                  })()}
+                  onTypeChange={(type) => {
+                    setSelectedVizType(type);
+                  }}
+                />
+              )}
+            </div>
             <p>{result.insight_summary}</p>
           </div>
 
@@ -327,22 +353,28 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
                 );
               }
 
-              let vizType: VisualizationType = result.visualization_type as VisualizationType;
-              
-              // Auto-select visualization type if needed
-              // Pass both query content and user question for better context
-              if (vizType === 'auto' || !vizType) {
-                vizType = autoSelectVisualizationType(
-                  queryResults, 
-                  result.query_content || '', 
-                  question
-                );
-                console.log('[AdhocQuery] Selected visualization:', {
-                  vizType,
-                  rowCount: queryResults.length,
-                  keys: queryResults.length > 0 ? Object.keys(queryResults[0]) : [],
-                  question: question.substring(0, 50)
-                });
+              // Use selected visualization type if available, otherwise use auto-selected or default
+              let vizType: VisualizationType;
+              if (selectedVizType) {
+                vizType = selectedVizType;
+              } else {
+                vizType = result.visualization_type as VisualizationType;
+                
+                // Auto-select visualization type if needed
+                // Pass both query content and user question for better context
+                if (vizType === 'auto' || !vizType) {
+                  vizType = autoSelectVisualizationType(
+                    queryResults, 
+                    result.query_content || '', 
+                    question
+                  );
+                  console.log('[AdhocQuery] Selected visualization:', {
+                    vizType,
+                    rowCount: queryResults.length,
+                    keys: queryResults.length > 0 ? Object.keys(queryResults[0]) : [],
+                    question: question.substring(0, 50)
+                  });
+                }
               }
               
               // Ensure we never pass 'auto' to the renderer

@@ -200,12 +200,34 @@ export default function BarChart({ data, title }: BarChartProps) {
     return false;
   });
   
-  // Smart column selection - PREFER NAME/LABEL COLUMNS OVER IDs
-  // Prefer columns with _name, _label, _formatted suffixes
+  // CRITICAL: Smart column selection - ALWAYS PREFER NAME/LABEL COLUMNS OVER IDs
+  // Prefer columns with _name, _label, _formatted suffixes (added by enrichment)
   const nameLabelColumns = keys.filter(k => {
     const lower = k.toLowerCase();
     return lower.includes('_name') || lower.includes('_label') || lower.includes('_formatted') || 
-           lower.includes('month_name') || lower.includes('date_label');
+           lower.includes('month_name') || lower.includes('date_label') ||
+           lower === 'name'; // Direct name column
+  });
+  
+  // CRITICAL: Detect ID columns and find corresponding name columns
+  const idColumns = keys.filter(k => {
+    const lower = k.toLowerCase();
+    const sampleValue = data[0]?.[k];
+    const isUUID = sampleValue && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(sampleValue));
+    return lower.endsWith('_id') || lower.endsWith('id') || isUUID;
+  });
+  
+  // For each ID column, check if there's a corresponding _name column
+  const idToNameMapping = new Map<string, string>();
+  idColumns.forEach(idCol => {
+    const nameCol = keys.find(k => {
+      const lower = k.toLowerCase();
+      const idColBase = idCol.toLowerCase().replace(/_id$/, '').replace(/id$/, '');
+      return (lower === `${idColBase}_name` || lower === `${idColBase}name` || lower === 'name') && k !== idCol;
+    });
+    if (nameCol) {
+      idToNameMapping.set(idCol, nameCol);
+    }
   });
   
   // Value column patterns (aggregations, metrics)
@@ -213,10 +235,28 @@ export default function BarChart({ data, title }: BarChartProps) {
   // Category column patterns (dimensions, groups)
   const categoryPatterns = ['name', 'category', 'type', 'status', 'group', 'label', 'city', 'country', 'region', 'item'];
   
-  // Prefer name/label columns for category
-  let categoryKey = nameLabelColumns.length > 0 
-    ? nameLabelColumns[0] 
-    : (stringCols.length > 0 ? stringCols[0] : keys[0]);
+  // CRITICAL: ALWAYS prefer name/label columns for category - NEVER use IDs
+  let categoryKey: string;
+  if (nameLabelColumns.length > 0) {
+    // Use enriched name columns first
+    categoryKey = nameLabelColumns[0];
+  } else {
+    // Check if we have ID columns with corresponding name columns
+    const idWithName = Array.from(idToNameMapping.values())[0];
+    if (idWithName) {
+      categoryKey = idWithName;
+    } else {
+      // Filter out ID columns from string columns
+      const nonIdStringCols = stringCols.filter(k => {
+        const lower = k.toLowerCase();
+        const sampleValue = data[0]?.[k];
+        const isUUID = sampleValue && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(sampleValue));
+        return !lower.endsWith('_id') && !lower.endsWith('id') && !isUUID;
+      });
+      categoryKey = nonIdStringCols.length > 0 ? nonIdStringCols[0] : (stringCols.length > 0 ? stringCols[0] : keys[0]);
+    }
+  }
+  
   let valueKey = numericCols.find(k => k !== categoryKey) || numericCols[0] || keys[1] || keys[0];
   
   // Prefer date_label or formatted date columns over raw dates

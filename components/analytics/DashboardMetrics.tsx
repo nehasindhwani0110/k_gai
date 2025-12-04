@@ -6,6 +6,7 @@ import { DashboardMetricsResponse, DashboardMetric, VisualizationType } from '@/
 import VisualizationRenderer from './VisualizationRenderer';
 import { autoSelectVisualizationType } from '@/analytics-engine/services/visualization-selector';
 import EnhancedDataModal from './EnhancedDataModal';
+import VisualizationTypeSelector from './VisualizationTypeSelector';
 
 interface DashboardMetricsProps {
   metadata: any;
@@ -113,6 +114,7 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [selectedMetric, setSelectedMetric] = useState<{ metric: DashboardMetric; data: any[] } | null>(null);
+  const [selectedVizTypes, setSelectedVizTypes] = useState<Record<string, VisualizationType>>({});
 
   useEffect(() => {
     loadDashboardMetrics();
@@ -484,7 +486,31 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-xl font-bold text-gray-800">{metric.metric_name}</h3>
-                  <div className={`w-3 h-3 rounded-full ${hasData ? 'bg-green-500' : isLoading ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`}></div>
+                  <div className="flex items-center gap-3">
+                    {hasData && (
+                      <VisualizationTypeSelector
+                        currentType={selectedVizTypes[metric.metric_name] || (() => {
+                          const rawVizType = metric.visualization_type;
+                          const metricDataArray = Array.isArray(metricData) ? metricData : [];
+                          if (rawVizType === 'auto' || !rawVizType || typeof rawVizType !== 'string') {
+                            return autoSelectVisualizationType(
+                              metricDataArray,
+                              metric.query_content || '',
+                              metric.metric_name || metric.insight_summary
+                            );
+                          }
+                          return rawVizType as VisualizationType;
+                        })()}
+                        onTypeChange={(type) => {
+                          setSelectedVizTypes(prev => ({
+                            ...prev,
+                            [metric.metric_name]: type,
+                          }));
+                        }}
+                      />
+                    )}
+                    <div className={`w-3 h-3 rounded-full ${hasData ? 'bg-green-500' : isLoading ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`}></div>
+                  </div>
                 </div>
                 <p className="text-sm text-gray-600 leading-relaxed">{metric.insight_summary}</p>
               </div>
@@ -542,18 +568,23 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
                   </div>
                 ) : hasData ? (() => {
                   try {
-                    const rawVizType = metric.visualization_type;
-                    let vizType: VisualizationType;
-                    
                     const metricDataArray = Array.isArray(metricData) ? metricData : [];
-                    if (rawVizType === 'auto' || !rawVizType || typeof rawVizType !== 'string') {
-                      vizType = autoSelectVisualizationType(
-                        metricDataArray,
-                        metric.query_content || '',
-                        metric.metric_name || metric.insight_summary
-                      );
+                    
+                    // Use selected visualization type if available, otherwise use auto-selected or default
+                    let vizType: VisualizationType;
+                    if (selectedVizTypes[metric.metric_name]) {
+                      vizType = selectedVizTypes[metric.metric_name];
                     } else {
-                      vizType = rawVizType as VisualizationType;
+                      const rawVizType = metric.visualization_type;
+                      if (rawVizType === 'auto' || !rawVizType || typeof rawVizType !== 'string') {
+                        vizType = autoSelectVisualizationType(
+                          metricDataArray,
+                          metric.query_content || '',
+                          metric.metric_name || metric.insight_summary
+                        );
+                      } else {
+                        vizType = rawVizType as VisualizationType;
+                      }
                     }
                     
                     if (!vizType || vizType === 'auto') {

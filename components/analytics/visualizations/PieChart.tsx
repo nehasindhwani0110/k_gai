@@ -56,26 +56,74 @@ export default function PieChart({ data, title }: PieChartProps) {
     return numericCount > sampleSize / 2;
   });
   
+  // CRITICAL: Prefer name/label columns (added by enrichment) over IDs
+  const nameLabelColumns = keys.filter(k => {
+    const lower = k.toLowerCase();
+    return lower.includes('_name') || lower.includes('_label') || lower.includes('_formatted') || 
+           lower === 'name'; // Direct name column
+  });
+  
+  // CRITICAL: Detect ID columns and find corresponding name columns
+  const idColumns = keys.filter(k => {
+    const lower = k.toLowerCase();
+    const sampleValue = data[0]?.[k];
+    const isUUID = sampleValue && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(sampleValue));
+    return lower.endsWith('_id') || lower.endsWith('id') || isUUID;
+  });
+  
+  // For each ID column, check if there's a corresponding _name column
+  const idToNameMapping = new Map<string, string>();
+  idColumns.forEach(idCol => {
+    const nameCol = keys.find(k => {
+      const lower = k.toLowerCase();
+      const idColBase = idCol.toLowerCase().replace(/_id$/, '').replace(/id$/, '');
+      return (lower === `${idColBase}_name` || lower === `${idColBase}name` || lower === 'name') && k !== idCol;
+    });
+    if (nameCol) {
+      idToNameMapping.set(idCol, nameCol);
+    }
+  });
+  
   // Column name patterns for better detection
   const namePatterns = ['name', 'category', 'type', 'status', 'group', 'label', 'city', 'country', 'region', 'item'];
   const valuePatterns = ['count', 'total', 'sum', 'amount', 'value', 'quantity', 'number'];
   
-  // Smart selection: prefer columns by name patterns
-  let nameKey = stringCols.length > 0 ? stringCols[0] : keys[0];
-  let valueKey = numericCols.find(k => k !== nameKey) || numericCols[0] || keys[1] || keys[0];
+  // CRITICAL: ALWAYS prefer name/label columns - NEVER use IDs
+  let nameKey: string;
+  if (nameLabelColumns.length > 0) {
+    // Use enriched name columns first
+    nameKey = nameLabelColumns[0];
+  } else {
+    // Check if we have ID columns with corresponding name columns
+    const idWithName = Array.from(idToNameMapping.values())[0];
+    if (idWithName) {
+      nameKey = idWithName;
+    } else {
+      // Filter out ID columns from string columns
+      const nonIdStringCols = stringCols.filter(k => {
+        const lower = k.toLowerCase();
+        const sampleValue = data[0]?.[k];
+        const isUUID = sampleValue && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(sampleValue));
+        return !lower.endsWith('_id') && !lower.endsWith('id') && !isUUID;
+      });
+      
+      // Try to identify by column name patterns (excluding IDs)
+      const nameKeyByName = keys.find(key => {
+        const lowerKey = key.toLowerCase();
+        const isNotId = !lowerKey.endsWith('_id') && !lowerKey.endsWith('id');
+        return namePatterns.some(p => lowerKey.includes(p)) && isNotId && (stringCols.includes(key) || !numericCols.includes(key));
+      });
+      
+      nameKey = nameKeyByName || (nonIdStringCols.length > 0 ? nonIdStringCols[0] : (stringCols.length > 0 ? stringCols[0] : keys[0]));
+    }
+  }
   
-  // Try to identify by column name patterns
-  const nameKeyByName = keys.find(key => {
-    const lowerKey = key.toLowerCase();
-    return namePatterns.some(p => lowerKey.includes(p)) && (stringCols.includes(key) || !numericCols.includes(key));
-  });
   const valueKeyByName = keys.find(key => {
     const lowerKey = key.toLowerCase();
     return valuePatterns.some(p => lowerKey.includes(p)) && numericCols.includes(key);
   });
   
-  if (nameKeyByName) nameKey = nameKeyByName;
-  if (valueKeyByName) valueKey = valueKeyByName;
+  let valueKey = valueKeyByName || (numericCols.find(k => k !== nameKey) || numericCols[0] || keys[1] || keys[0]);
   
   // If exactly 2 columns, use them directly
   if (keys.length === 2) {
