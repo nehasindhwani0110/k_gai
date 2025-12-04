@@ -7,7 +7,77 @@ from sqlalchemy import create_engine, inspect, MetaData, Table
 from sqlalchemy.engine import Engine
 from typing import Dict, List, Optional
 import json
+import hashlib
+import time
 from urllib.parse import urlparse, urlunparse, quote_plus
+
+# Global engine cache - reuse engines across requests
+_engine_cache: Dict[str, tuple] = {}  # key: (engine, created_at)
+_engine_cache_ttl = 3600  # Keep engines for 1 hour
+
+
+def _get_cache_key(connection_string: str, schema_name: Optional[str] = None) -> str:
+    """Generate consistent cache key from connection string"""
+    normalized = _normalize_connection_string(connection_string)
+    key_parts = [normalized]
+    if schema_name:
+        key_parts.append(f"schema:{schema_name}")
+    key_string = "|".join(key_parts)
+    return hashlib.md5(key_string.encode()).hexdigest()
+
+
+def _get_cached_engine(connection_string: str):
+    """Get cached engine or create new one"""
+    cache_key = _get_cache_key(connection_string)
+    current_time = time.time()
+    
+    # Check if we have a cached engine that's still valid
+    if cache_key in _engine_cache:
+        engine, created_at = _engine_cache[cache_key]
+        if current_time - created_at < _engine_cache_ttl:
+            print(f"[SCHEMA] ✅ Using cached engine (age: {int(current_time - created_at)}s)")
+            return engine
+        else:
+            # Engine expired, dispose it
+            print(f"[SCHEMA] ⏰ Engine cache expired, disposing old engine")
+            try:
+                engine.dispose()
+            except:
+                pass
+            del _engine_cache[cache_key]
+    
+    # Create new engine
+    print(f"[SCHEMA] 🔄 Creating new engine (not cached)")
+    normalized_connection_string = _normalize_connection_string(connection_string)
+    engine = _create_engine_with_pooling(normalized_connection_string)
+    _engine_cache[cache_key] = (engine, current_time)
+    return engine
+
+
+def _create_engine_with_pooling(connection_string: str):
+    """
+    Creates a SQLAlchemy engine with connection pooling and timeout settings.
+    This prevents connection exhaustion and handles transient failures.
+    
+    Args:
+        connection_string: Normalized database connection string
+        
+    Returns:
+        SQLAlchemy Engine instance with pooling configured
+    """
+    return create_engine(
+        connection_string,
+        pool_size=5,  # Number of connections to maintain
+        max_overflow=10,  # Additional connections beyond pool_size
+        pool_timeout=30,  # Seconds to wait for connection from pool
+        pool_recycle=3600,  # Recycle connections after 1 hour
+        pool_pre_ping=True,  # Verify connections before using (detects stale connections)
+        connect_args={
+            'connect_timeout': 10,  # Connection timeout in seconds
+            'read_timeout': 30,  # Read timeout in seconds
+            'write_timeout': 30,  # Write timeout in seconds
+        } if 'mysql' in connection_string else {}
+    )
 
 
 def _normalize_connection_string(connection_string: str) -> str:
@@ -112,10 +182,8 @@ def introspect_sql_schema(
     Returns:
         Dictionary with source_type and tables metadata
     """
-    # Normalize connection string to handle special characters in password
-    normalized_connection_string = _normalize_connection_string(connection_string)
-    
-    engine = create_engine(normalized_connection_string)
+    # Use cached engine or create new one (reuses connections)
+    engine = _get_cached_engine(connection_string)
     inspector = inspect(engine)
     
     tables_metadata = []

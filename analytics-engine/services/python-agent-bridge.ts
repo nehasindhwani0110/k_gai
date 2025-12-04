@@ -80,33 +80,90 @@ export async function generateQueryWithPythonAgent(
 
 /**
  * Explores schema using Python agent
+ * Includes timeout handling and retry logic for transient failures
  */
 export async function exploreSchemaWithPythonAgent(
   userQuestion: string,
   connectionString: string
 ): Promise<DataSourceMetadata> {
   const pythonBackendUrl = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
+  const SCHEMA_EXPLORATION_TIMEOUT_MS = 60000; // 60 seconds
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 2000; // 2 seconds
   
-  try {
-    const response = await fetch(`${pythonBackendUrl}/agent/explore-schema`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        question: userQuestion,
-        connection_string: connectionString,
-      }),
-    });
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      console.log(`[PYTHON-AGENT] Schema exploration attempt ${attempt}/${MAX_RETRIES}`);
+      
+      // Create timeout promise
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`Schema exploration timeout after ${SCHEMA_EXPLORATION_TIMEOUT_MS}ms`)), SCHEMA_EXPLORATION_TIMEOUT_MS);
+      });
+      
+      // Create fetch promise
+      const fetchPromise = fetch(`${pythonBackendUrl}/agent/explore-schema`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          question: userQuestion,
+          connection_string: connectionString,
+        }),
+      });
+      
+      // Race between fetch and timeout
+      const response = await Promise.race([fetchPromise, timeoutPromise]);
+      
+      if (!response.ok) {
+        // Check if it's a transient error (503, 500) that we should retry
+        if (response.status === 503 || response.status === 500) {
+          const errorText = await response.text();
+          lastError = new Error(`Schema exploration failed: ${response.status} - ${errorText}`);
+          
+          // If not the last attempt, wait and retry
+          if (attempt < MAX_RETRIES) {
+            console.warn(`[PYTHON-AGENT] Transient error (${response.status}), retrying in ${RETRY_DELAY_MS}ms...`);
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt)); // Exponential backoff
+            continue;
+          }
+        }
+        
+        const errorText = await response.text();
+        throw new Error(`Schema exploration failed: ${response.status} - ${errorText}`);
+      }
 
-    if (!response.ok) {
-      throw new Error(`Schema exploration failed: ${response.status}`);
+      const result = await response.json();
+      console.log(`[PYTHON-AGENT] Schema exploration successful on attempt ${attempt}`);
+      return result;
+      
+    } catch (error: any) {
+      lastError = error;
+      
+      // Check if it's a timeout or connection error that we should retry
+      const isRetryableError = 
+        error?.message?.includes('timeout') ||
+        error?.message?.includes('ECONNREFUSED') ||
+        error?.message?.includes('fetch failed') ||
+        error?.code === 'ECONNREFUSED';
+      
+      if (isRetryableError && attempt < MAX_RETRIES) {
+        console.warn(`[PYTHON-AGENT] Retryable error on attempt ${attempt}, retrying in ${RETRY_DELAY_MS * attempt}ms...`, error.message);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt)); // Exponential backoff
+        continue;
+      }
+      
+      // If not retryable or last attempt, throw
+      if (attempt === MAX_RETRIES) {
+        console.error(`[PYTHON-AGENT] Schema exploration failed after ${MAX_RETRIES} attempts:`, error);
+        throw error;
+      }
     }
-
-    return await response.json();
-  } catch (error) {
-    console.error('[PYTHON-AGENT] Schema exploration error:', error);
-    throw error;
   }
+  
+  // Should never reach here, but just in case
+  throw lastError || new Error('Schema exploration failed: Unknown error');
 }
 

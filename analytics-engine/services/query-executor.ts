@@ -144,11 +144,14 @@ Return ONLY the corrected SQL query, no explanations or markdown:`;
   }
 }
 
-async function fixColumnErrorWithLLM(
+/**
+ * Fast column error fixing using system catalog (no LLM - instant!)
+ * Fetches ALL columns from system catalog and does direct fuzzy matching
+ */
+async function fixColumnErrorWithSystemCatalog(
   query: string, 
   errorMessage: string,
-  connectionString: string,
-  userQuestion?: string
+  connectionString: string
 ): Promise<string> {
   try {
     // Extract incorrect column from error
@@ -163,18 +166,21 @@ async function fixColumnErrorWithLLM(
       ? incorrectColumnFull.split('.') 
       : [null, incorrectColumnFull];
 
-    // Extract ALL tables from query (FROM and JOINs)
+    // Extract ALL tables from query (FROM and JOINs) - FIXED: Don't match SQL keywords as aliases
+    const sqlKeywords = new Set(['LIMIT', 'ORDER', 'GROUP', 'WHERE', 'HAVING', 'SELECT', 'FROM', 'JOIN', 'INNER', 'LEFT', 'RIGHT', 'ON', 'AS', 'BY', 'ASC', 'DESC']);
     const tableMatches = [
-      ...query.matchAll(/FROM\s+(\w+)(?:\s+(\w+))?/gi),
-      ...query.matchAll(/JOIN\s+(\w+)(?:\s+(\w+))?/gi),
+      ...query.matchAll(/FROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?/gi),
+      ...query.matchAll(/JOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?/gi),
     ];
     
     const tables: Array<{ name: string; alias?: string }> = [];
     tableMatches.forEach(match => {
       const tableName = match[1];
       const alias = match[2] || match[4];
+      // Only add alias if it's not a SQL keyword
       if (tableName && !tables.some(t => t.name === tableName)) {
-        tables.push({ name: tableName, alias });
+        const validAlias = alias && !sqlKeywords.has(alias.toUpperCase()) ? alias : undefined;
+        tables.push({ name: tableName, alias: validAlias });
       }
     });
 
@@ -183,150 +189,95 @@ async function fixColumnErrorWithLLM(
       return query;
     }
 
-    // Get schema ONLY for tables used in this query (not entire database)
-    const pythonBackendUrl = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
-    const schemaInfo: Record<string, string[]> = {};
+    // Fetch ALL columns from system catalog for tables in query (FAST - no LLM!)
+    const { getTablesMetadata } = await import('./system-catalog-service');
+    const tableNames = tables.map(t => t.name);
     
-    try {
-      // Get full schema but filter to only tables used in query
-      const schemaResponse = await fetch(`${pythonBackendUrl}/introspect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          connection_string: connectionString,
-        }),
-      });
+    console.log(`[QUERY] Fetching ALL columns from system catalog for tables: ${tableNames.join(', ')}`);
+    const fullTables = await getTablesMetadata(
+      { connectionString },
+      tableNames
+    );
 
-      if (schemaResponse.ok) {
-        const schema = await schemaResponse.json();
-        const tableNamesInQuery = tables.map(t => t.name.toLowerCase());
+    // Build column map: table name -> all columns
+    const columnMap = new Map<string, string[]>();
+    fullTables.forEach(table => {
+      const allColumns = table.columns?.map(c => c.name) || [];
+      columnMap.set(table.name.toLowerCase(), allColumns);
+      console.log(`[QUERY] Found ${allColumns.length} columns for table ${table.name} (COMPLETE)`);
+    });
+
+    // Find the correct column using fuzzy matching
+    let bestMatch: { column: string; table: string; score: number } | null = null;
+    const incorrectLower = incorrectColumn.toLowerCase();
+    
+    // Try to find which table the column belongs to
+    const possibleTables = tableAlias 
+      ? tables.filter(t => t.alias?.toLowerCase() === tableAlias.toLowerCase() || t.name.toLowerCase() === tableAlias.toLowerCase())
+      : tables; // If no alias, check all tables
+    
+    for (const table of possibleTables) {
+      const tableColumns = columnMap.get(table.name.toLowerCase()) || [];
+      
+      for (const col of tableColumns) {
+        const colLower = col.toLowerCase();
+        let score = 0;
         
-        // Only process tables that are actually in the query
-        tables.forEach(({ name, alias }) => {
-          const table = schema.tables?.find((t: any) => {
-            const tName = t.name.toLowerCase();
-            const queryName = name.toLowerCase();
-            return tName === queryName ||
-                   tName.replace(/^tbl_|^tb_|^table_/i, '') === queryName ||
-                   queryName.replace(/^tbl_|^tb_|^table_/i, '') === tName;
-          });
-          
-          if (table?.columns) {
-            const key = alias || name;
-            // Limit columns to prevent context length issues (max 50 columns per table)
-            const columns = table.columns.slice(0, 50).map((c: any) => c.name);
-            schemaInfo[key] = columns;
-            console.log(`[QUERY] Found ${columns.length} columns for table ${name}${alias ? ` (alias: ${alias})` : ''}${table.columns.length > 50 ? ` (showing first 50 of ${table.columns.length})` : ''}`);
-          }
-        });
-      }
-    } catch (schemaError) {
-      console.warn('[QUERY] Could not fetch schema for column fix:', schemaError);
-    }
-
-    // Build concise schema context (only for tables in query)
-    let schemaContext = '';
-    let totalColumns = 0;
-    Object.entries(schemaInfo).forEach(([tableKey, columns]) => {
-      if (columns.length > 0) {
-        schemaContext += `\nTable ${tableKey} (${columns.length} columns): ${columns.slice(0, 30).join(', ')}${columns.length > 30 ? '...' : ''}`;
-        totalColumns += columns.length;
-      }
-    });
-    
-    // If too many columns, summarize instead
-    if (totalColumns > 100) {
-      schemaContext = '';
-      Object.entries(schemaInfo).forEach(([tableKey, columns]) => {
-        if (columns.length > 0) {
-          // Show first 10 and last 5 columns as a sample
-          const sample = columns.length > 15 
-            ? [...columns.slice(0, 10), '...', ...columns.slice(-5)].join(', ')
-            : columns.join(', ');
-          schemaContext += `\nTable ${tableKey}: ${sample} (${columns.length} total columns)`;
+        // Exact match
+        if (colLower === incorrectLower) {
+          score = 100;
         }
-      });
+        // Contains match
+        else if (colLower.includes(incorrectLower) || incorrectLower.includes(colLower)) {
+          score = 80;
+        }
+        // Fuzzy match (remove underscores/spaces)
+        else {
+          const colNormalized = colLower.replace(/[_\s]/g, '');
+          const incorrectNormalized = incorrectLower.replace(/[_\s]/g, '');
+          if (colNormalized.includes(incorrectNormalized) || incorrectNormalized.includes(colNormalized)) {
+            score = 60;
+          }
+          // Check if removing common prefixes/suffixes helps
+          else {
+            const colBase = colLower.replace(/^(is|has|can|should|current|last|first|total|avg|sum|count|max|min)/, '');
+            const incorrectBase = incorrectLower.replace(/^(is|has|can|should|current|last|first|total|avg|sum|count|max|min)/, '');
+            if (colBase === incorrectBase || colBase.includes(incorrectBase) || incorrectBase.includes(colBase)) {
+              score = 50;
+            }
+          }
+        }
+        
+        if (score > 0 && (!bestMatch || score > bestMatch.score)) {
+          bestMatch = { column: col, table: table.name, score };
+        }
+      }
     }
 
-    // Find potential matches for the incorrect column
-    const allColumns = Object.values(schemaInfo).flat();
-    const potentialMatches = allColumns.filter(col => {
-      const colLower = col.toLowerCase();
-      const incorrectLower = incorrectColumn.toLowerCase();
-      return colLower.includes(incorrectLower) || 
-             incorrectLower.includes(colLower) ||
-             colLower.replace(/_/g, '').includes(incorrectLower.replace(/_/g, '')) ||
-             incorrectLower.replace(/_/g, '').includes(colLower.replace(/_/g, ''));
-    });
+    if (!bestMatch || bestMatch.score < 30) {
+      console.log(`[QUERY] Could not find suitable column match for "${incorrectColumn}" (best score: ${bestMatch?.score || 0})`);
+      return query;
+    }
 
-    const prompt = `You are fixing a SQL query that has a column name error. CRITICALLY IMPORTANT: You must maintain the EXACT intent of the original query.
+    // Replace incorrect column with correct one
+    const replacement = tableAlias ? `${tableAlias}.${bestMatch.column}` : bestMatch.column;
+    const fixedQuery = query.replace(
+      new RegExp(`\\b${incorrectColumnFull.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'),
+      replacement
+    );
 
-Error: ${errorMessage}
-
-Original Query:
-${query}
-
-${userQuestion ? `Original User Question: "${userQuestion}"\n` : ''}
-
-Incorrect Column Reference: ${incorrectColumnFull}
-${tableAlias ? `Table Alias: ${tableAlias}` : ''}
-
-Available Schema:${schemaContext}
-
-${potentialMatches.length > 0 ? `\nPotential Column Matches: ${potentialMatches.join(', ')}` : ''}
-
-CRITICAL REQUIREMENTS:
-1. The fixed query MUST answer the SAME question as the original query
-2. If "${incorrectColumn}" was meant to find payment methods, use a column that contains payment method data
-3. If "${incorrectColumn}" was meant to find customer info, use a column that contains customer data
-4. Use EXACT column names from the schema provided above
-5. Maintain all JOINs, WHERE clauses, and GROUP BY logic
-6. Only replace the incorrect column name, keep everything else identical
-7. If you cannot find a suitable replacement, return the original query unchanged
-
-Think step by step:
-- What was the original query trying to accomplish?
-- What type of data does "${incorrectColumn}" represent?
-- Which column in the schema best matches this intent?
-- How can I replace it while keeping the query logic identical?
-
-Return ONLY the corrected SQL query, no explanations or markdown:`;
-
-    const response = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
-      messages: [
-        {
-          role: 'system',
-          content: 'You are an expert SQL query fixer. Your job is to fix column name errors while PRESERVING the exact intent and meaning of the original query. Never change the query logic or purpose, only fix column names.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      temperature: 0.1,
-      max_tokens: 800,
-    });
-
-    const fixedQuery = response.choices[0]?.message?.content?.trim() || query;
-    
-    // Clean up query (remove markdown code blocks if present)
-    const cleanedQuery = fixedQuery
-      .replace(/^```sql\s*/i, '')
-      .replace(/```\s*$/i, '')
-      .replace(/^```\s*/i, '')
-      .trim();
-
-    console.log('[QUERY] LLM fixed column error', {
+    console.log(`[QUERY] Fixed column error (INSTANT - no LLM):`, {
       original: query.substring(0, 100),
-      fixed: cleanedQuery.substring(0, 100),
+      fixed: fixedQuery.substring(0, 100),
       incorrectColumn: incorrectColumnFull,
-      potentialMatches: potentialMatches.slice(0, 5)
+      correctColumn: replacement,
+      matchScore: bestMatch.score,
+      table: bestMatch.table
     });
 
-    return cleanedQuery;
+    return fixedQuery;
   } catch (error) {
-    console.error('[QUERY] Error fixing column error with LLM:', error);
+    console.error('[QUERY] Error fixing column error with system catalog:', error);
     return query; // Return original on error
   }
 }
@@ -764,9 +715,9 @@ export async function executeSQLQuery(
       
       // Check if it's a column error (Unknown column)
       if (errorMessage.includes('Unknown column') || errorMessage.includes('Column error')) {
-        console.log('[QUERY] Detected column error, attempting to fix with LLM...');
+        console.log('[QUERY] Detected column error, attempting to fix with system catalog...');
         try {
-          const fixedQuery = await fixColumnErrorWithLLM(finalQuery, errorMessage, connectionString, userQuestion);
+          const fixedQuery = await fixColumnErrorWithSystemCatalog(finalQuery, errorMessage, connectionString);
           if (fixedQuery && fixedQuery !== finalQuery) {
             console.log('[QUERY] Retrying with fixed query...');
             // Retry with fixed query

@@ -6,10 +6,76 @@ Executes SQL queries on databases and CSV files
 from sqlalchemy import create_engine, text
 from typing import List, Dict, Any
 import pandas as pd
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time as dt_time, timedelta
 from decimal import Decimal
 from csv_processor import execute_csv_query
 from schema_introspection import _normalize_connection_string
+import hashlib
+import time
+
+# Global engine cache - reuse engines across requests
+_engine_cache: Dict[str, tuple] = {}  # key: (engine, created_at)
+_engine_cache_ttl = 3600  # Keep engines for 1 hour
+
+
+def _get_cache_key(connection_string: str) -> str:
+    """Generate consistent cache key from connection string"""
+    normalized = _normalize_connection_string(connection_string)
+    return hashlib.md5(normalized.encode()).hexdigest()
+
+
+def _get_cached_engine(connection_string: str):
+    """Get cached engine or create new one"""
+    cache_key = _get_cache_key(connection_string)
+    current_time = time.time()
+    
+    # Check if we have a cached engine that's still valid
+    if cache_key in _engine_cache:
+        engine, created_at = _engine_cache[cache_key]
+        if current_time - created_at < _engine_cache_ttl:
+            print(f"[QUERY-EXECUTOR] ✅ Using cached engine (age: {int(current_time - created_at)}s)")
+            return engine
+        else:
+            # Engine expired, dispose it
+            print(f"[QUERY-EXECUTOR] ⏰ Engine cache expired, disposing old engine")
+            try:
+                engine.dispose()
+            except:
+                pass
+            del _engine_cache[cache_key]
+    
+    # Create new engine
+    print(f"[QUERY-EXECUTOR] 🔄 Creating new engine (not cached)")
+    normalized_connection_string = _normalize_connection_string(connection_string)
+    engine = _create_engine_with_pooling(normalized_connection_string)
+    _engine_cache[cache_key] = (engine, current_time)
+    return engine
+
+
+def _create_engine_with_pooling(connection_string: str):
+    """
+    Creates a SQLAlchemy engine with connection pooling and timeout settings.
+    This prevents connection exhaustion and handles transient failures.
+    
+    Args:
+        connection_string: Normalized database connection string
+        
+    Returns:
+        SQLAlchemy Engine instance with pooling configured
+    """
+    return create_engine(
+        connection_string,
+        pool_size=5,  # Number of connections to maintain
+        max_overflow=10,  # Additional connections beyond pool_size
+        pool_timeout=30,  # Seconds to wait for connection from pool
+        pool_recycle=3600,  # Recycle connections after 1 hour
+        pool_pre_ping=True,  # Verify connections before using (detects stale connections)
+        connect_args={
+            'connect_timeout': 10,  # Connection timeout in seconds
+            'read_timeout': 30,  # Read timeout in seconds
+            'write_timeout': 30,  # Write timeout in seconds
+        } if 'mysql' in connection_string else {}
+    )
 
 
 def serialize_value(value: Any) -> Any:
@@ -29,7 +95,7 @@ def serialize_value(value: Any) -> Any:
         return value.isoformat()
     elif isinstance(value, date):
         return value.isoformat()
-    elif isinstance(value, time):
+    elif isinstance(value, dt_time):
         return value.isoformat()
     elif isinstance(value, timedelta):
         return value.total_seconds()
@@ -63,10 +129,8 @@ def execute_sql_query(connection_string: str, query: str) -> List[Dict]:
     if not validate_sql_query(query):
         raise ValueError("Query failed security validation. Only SELECT queries are allowed, and dangerous operations (INSERT, UPDATE, DELETE, DROP, etc.) are blocked.")
     
-    # Normalize connection string to handle special characters in password
-    normalized_connection_string = _normalize_connection_string(connection_string)
-    
-    engine = create_engine(normalized_connection_string)
+    # Use cached engine or create new one (reuses connections)
+    engine = _get_cached_engine(connection_string)
     
     try:
         with engine.connect() as conn:
@@ -96,8 +160,7 @@ def execute_sql_query(connection_string: str, query: str) -> List[Dict]:
             raise ValueError(f"SQL syntax error: {error_message}")
         else:
             raise ValueError(f"Query execution failed ({error_type}): {error_message}")
-    finally:
-        engine.dispose()
+    # NOTE: Don't dispose engine here - it's cached and reused!
 
 
 def validate_sql_query(query: str) -> bool:

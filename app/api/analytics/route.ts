@@ -102,12 +102,12 @@ export async function POST(request: NextRequest) {
                 // Small database - fetch all tables directly (fast, no semantic search needed)
                 console.log(`[API] ⚡ Small database (${tableCount} tables) - fetching all tables directly`);
                 return await getHybridMetadata({
-                  dataSourceId,
-                  userQuestion: undefined, // No question = get all tables
+            dataSourceId,
+            userQuestion: undefined, // No question = get all tables
                   maxTables: 1000,
                   useSystemCatalog: true,
                   useSemanticSearch: false, // Skip semantic search for small DBs
-                  includeStatistics: false,
+            includeStatistics: false,
                   forceRefresh: false, // Use cache (faster)
                 });
               }
@@ -217,11 +217,11 @@ export async function POST(request: NextRequest) {
       } else {
         // Use original direct LLM method
         result = await generateAdhocQuery(
-          body.user_question,
+        body.user_question,
           freshMetadata, // Use fresh metadata
           connectionString,
           questionUnderstanding // Pass question understanding for better accuracy
-        );
+      );
       }
 
       // Validate generated SQL query if it's SQL_QUERY type

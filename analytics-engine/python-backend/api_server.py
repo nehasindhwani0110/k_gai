@@ -273,11 +273,15 @@ def system_catalog():
         
         print(f"[PYTHON API] Querying system catalog for: {connection_string[:50]}...")
         
+        # Check if force_refresh is requested
+        force_refresh = data.get('force_refresh', False)
+        
         metadata = get_system_catalog_metadata(
             connection_string,
             database_name,
             schema_name,
-            include_system_tables
+            include_system_tables,
+            force_refresh=force_refresh
         )
         
         print(f"[PYTHON API] System catalog query successful: Found {len(metadata.get('tables', []))} tables")

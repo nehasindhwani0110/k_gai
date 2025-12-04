@@ -2,11 +2,124 @@
 System Catalog Service
 Queries INFORMATION_SCHEMA directly for efficient metadata retrieval
 Works efficiently with 200+ tables
+
+CONNECTION & CACHING:
+- Engines are cached globally and reused across requests (1 hour TTL)
+- Schema metadata is cached to avoid repeated introspection (5 minutes TTL)
+- This prevents "disconnection" issues and improves performance
+- Use force_refresh=True to bypass cache when schema changes
+
+CRITICAL: COMPLETE METADATA
+- This service ALWAYS returns ALL columns for each table (no limits)
+- Column limiting happens in TypeScript services for LLM context management
+- For query validation, always fetch FULL metadata using get_tables_metadata()
+- This ensures queries can use any column, not just the first N columns
 """
 
 from sqlalchemy import create_engine, text, inspect
 from typing import Dict, List, Optional
 from schema_introspection import _normalize_connection_string
+import hashlib
+import time
+
+# Global engine cache - reuse engines across requests
+_engine_cache: Dict[str, tuple] = {}  # key: (engine, created_at)
+_engine_cache_ttl = 3600  # Keep engines for 1 hour
+
+# Global schema metadata cache - avoid re-introspecting on every request
+_schema_cache: Dict[str, tuple] = {}  # key: (metadata, created_at)
+_schema_cache_ttl = 300  # Cache schema for 5 minutes
+
+
+def _get_cache_key(connection_string: str, database_name: Optional[str] = None, schema_name: Optional[str] = None) -> str:
+    """Generate consistent cache key from connection string and schema"""
+    normalized = _normalize_connection_string(connection_string)
+    key_parts = [normalized]
+    if database_name:
+        key_parts.append(f"db:{database_name}")
+    if schema_name:
+        key_parts.append(f"schema:{schema_name}")
+    key_string = "|".join(key_parts)
+    return hashlib.md5(key_string.encode()).hexdigest()
+
+
+def _get_cached_engine(connection_string: str):
+    """Get cached engine or create new one"""
+    cache_key = _get_cache_key(connection_string)
+    current_time = time.time()
+    
+    # Check if we have a cached engine that's still valid
+    if cache_key in _engine_cache:
+        engine, created_at = _engine_cache[cache_key]
+        if current_time - created_at < _engine_cache_ttl:
+            print(f"[SYSTEM-CATALOG] ✅ Using cached engine (age: {int(current_time - created_at)}s)")
+            return engine
+        else:
+            # Engine expired, dispose it
+            print(f"[SYSTEM-CATALOG] ⏰ Engine cache expired, disposing old engine")
+            try:
+                engine.dispose()
+            except:
+                pass
+            del _engine_cache[cache_key]
+    
+    # Create new engine
+    print(f"[SYSTEM-CATALOG] 🔄 Creating new engine (not cached)")
+    normalized_connection_string = _normalize_connection_string(connection_string)
+    engine = _create_engine_with_pooling(normalized_connection_string)
+    _engine_cache[cache_key] = (engine, current_time)
+    return engine
+
+
+def _get_cached_schema_metadata(connection_string: str, database_name: Optional[str] = None, schema_name: Optional[str] = None):
+    """Get cached schema metadata or return None"""
+    cache_key = _get_cache_key(connection_string, database_name, schema_name)
+    current_time = time.time()
+    
+    if cache_key in _schema_cache:
+        metadata, created_at = _schema_cache[cache_key]
+        if current_time - created_at < _schema_cache_ttl:
+            print(f"[SYSTEM-CATALOG] ✅ Using cached schema metadata (age: {int(current_time - created_at)}s, {len(metadata.get('tables', []))} tables)")
+            return metadata
+        else:
+            # Schema expired
+            print(f"[SYSTEM-CATALOG] ⏰ Schema cache expired")
+            del _schema_cache[cache_key]
+    
+    return None
+
+
+def _cache_schema_metadata(connection_string: str, metadata: Dict, database_name: Optional[str] = None, schema_name: Optional[str] = None):
+    """Cache schema metadata"""
+    cache_key = _get_cache_key(connection_string, database_name, schema_name)
+    _schema_cache[cache_key] = (metadata, time.time())
+    print(f"[SYSTEM-CATALOG] 💾 Cached schema metadata ({len(metadata.get('tables', []))} tables)")
+
+
+def _create_engine_with_pooling(connection_string: str):
+    """
+    Creates a SQLAlchemy engine with connection pooling and timeout settings.
+    This prevents connection exhaustion and handles transient failures.
+    
+    Args:
+        connection_string: Normalized database connection string
+        
+    Returns:
+        SQLAlchemy Engine instance with pooling configured
+    """
+    return create_engine(
+        connection_string,
+        pool_size=5,  # Number of connections to maintain
+        max_overflow=10,  # Additional connections beyond pool_size
+        pool_timeout=30,  # Seconds to wait for connection from pool
+        pool_recycle=3600,  # Recycle connections after 1 hour
+        pool_pre_ping=True,  # Verify connections before using (detects stale connections)
+        connect_args={
+            'connect_timeout': 10,  # Connection timeout in seconds
+            'read_timeout': 30,  # Read timeout in seconds
+            'write_timeout': 30,  # Write timeout in seconds
+        } if 'mysql' in connection_string else {}
+    )
 
 
 def detect_database_type(connection_string: str) -> str:
@@ -88,6 +201,7 @@ def query_system_catalog_mysql(
             )
             
             columns_metadata = []
+            column_count = 0
             for col_row in columns_result:
                 col_name, data_type, is_nullable, col_key, col_default, col_comment, ordinal = col_row
                 
@@ -100,11 +214,16 @@ def query_system_catalog_mysql(
                     "defaultValue": col_default,
                     "ordinalPosition": ordinal,
                 })
+                column_count += 1
+            
+            # Log column count for debugging (ensure ALL columns are fetched)
+            if column_count > 0:
+                print(f"[SYSTEM-CATALOG] Table {table_name}: {column_count} columns fetched (COMPLETE)")
             
             tables_metadata.append({
                 "name": table_name,
                 "description": table_comment,
-                "columns": columns_metadata,
+                "columns": columns_metadata,  # ALL columns - no limits
                 "rowCount": row_count,
                 "sizeBytes": table_size,
             })
@@ -181,6 +300,7 @@ def query_system_catalog_postgresql(
             )
             
             columns_metadata = []
+            column_count = 0
             for col_row in columns_result:
                 col_name, data_type, is_nullable, col_default, ordinal = col_row
                 
@@ -193,11 +313,16 @@ def query_system_catalog_postgresql(
                     "defaultValue": col_default,
                     "ordinalPosition": ordinal,
                 })
+                column_count += 1
+            
+            # Log column count for debugging (ensure ALL columns are fetched)
+            if column_count > 0:
+                print(f"[SYSTEM-CATALOG] Table {table_name}: {column_count} columns fetched (COMPLETE)")
             
             tables_metadata.append({
                 "name": table_name,
                 "description": table_comment,
-                "columns": columns_metadata,
+                "columns": columns_metadata,  # ALL columns - no limits
                 "rowCount": row_count,
                 "sizeBytes": 0,  # Would need pg_total_relation_size query
             })
@@ -212,25 +337,49 @@ def get_system_catalog_metadata(
     connection_string: str,
     database_name: Optional[str] = None,
     schema_name: Optional[str] = None,
-    include_system_tables: bool = False
+    include_system_tables: bool = False,
+    force_refresh: bool = False
 ) -> Dict:
     """
     Get metadata from database system catalog (INFORMATION_SCHEMA)
     More efficient than full introspection for large databases
+    
+    Args:
+        connection_string: Database connection string
+        database_name: Optional database name
+        schema_name: Optional schema name
+        include_system_tables: Whether to include system tables
+        force_refresh: Force refresh even if cached (default: False)
     """
-    normalized_connection_string = _normalize_connection_string(connection_string)
+    # Check cache first (unless force_refresh is True)
+    if not force_refresh:
+        cached_metadata = _get_cached_schema_metadata(connection_string, database_name, schema_name)
+        if cached_metadata:
+            return cached_metadata
+    
     db_type = detect_database_type(connection_string)
     
-    engine = create_engine(normalized_connection_string)
+    # Use cached engine or create new one
+    engine = _get_cached_engine(connection_string)
     
     if db_type == 'mysql':
-        return query_system_catalog_mysql(engine, database_name, include_system_tables)
+        metadata = query_system_catalog_mysql(engine, database_name, include_system_tables)
     elif db_type == 'postgresql':
-        return query_system_catalog_postgresql(engine, schema_name, include_system_tables)
+        metadata = query_system_catalog_postgresql(engine, schema_name, include_system_tables)
     else:
         # Fallback to SQLAlchemy introspection
         from schema_introspection import introspect_sql_schema
-        return introspect_sql_schema(connection_string, schema_name)
+        metadata = introspect_sql_schema(connection_string, schema_name)
+    
+    # Cache the metadata
+    _cache_schema_metadata(connection_string, metadata, database_name, schema_name)
+    
+    # Log total columns fetched to ensure completeness
+    total_tables = len(metadata.get('tables', []))
+    total_columns = sum(len(t.get('columns', [])) for t in metadata.get('tables', []))
+    print(f"[SYSTEM-CATALOG] ✅ Complete metadata fetched: {total_tables} tables, {total_columns} total columns (ALL columns included)")
+    
+    return metadata
 
 
 def get_tables_metadata(
@@ -240,10 +389,10 @@ def get_tables_metadata(
     schema_name: Optional[str] = None
 ) -> List[Dict]:
     """Get metadata for specific tables only"""
-    normalized_connection_string = _normalize_connection_string(connection_string)
     db_type = detect_database_type(connection_string)
     
-    engine = create_engine(normalized_connection_string)
+    # Use cached engine or create new one
+    engine = _get_cached_engine(connection_string)
     inspector = inspect(engine)
     
     tables_metadata = []
@@ -253,12 +402,18 @@ def get_tables_metadata(
             columns_metadata = []
             columns = inspector.get_columns(table_name, schema=schema_name)
             
+            column_count = 0
             for column in columns:
                 columns_metadata.append({
                     "name": column["name"],
                     "type": str(column["type"]),
                     "description": f"Column {column['name']} of type {column['type']}",
                 })
+                column_count += 1
+            
+            # Log column count for debugging (ensure ALL columns are fetched)
+            if column_count > 0:
+                print(f"[SYSTEM-CATALOG] Table {table_name}: {column_count} columns fetched (COMPLETE)")
             
             table_comment = None
             try:
@@ -270,7 +425,7 @@ def get_tables_metadata(
             tables_metadata.append({
                 "name": table_name,
                 "description": table_comment or f"Table {table_name}",
-                "columns": columns_metadata
+                "columns": columns_metadata  # ALL columns - no limits
             })
         except Exception as e:
             print(f"[SYSTEM-CATALOG] Error getting metadata for {table_name}: {e}")
@@ -286,10 +441,10 @@ def get_table_statistics(
     schema_name: Optional[str] = None
 ) -> Dict[str, Dict]:
     """Get table statistics (row counts, sizes)"""
-    normalized_connection_string = _normalize_connection_string(connection_string)
     db_type = detect_database_type(connection_string)
     
-    engine = create_engine(normalized_connection_string)
+    # Use cached engine or create new one
+    engine = _get_cached_engine(connection_string)
     statistics = {}
     
     with engine.connect() as conn:
@@ -374,10 +529,10 @@ def validate_table_exists(
     schema_name: Optional[str] = None
 ) -> bool:
     """Check if table exists in database"""
-    normalized_connection_string = _normalize_connection_string(connection_string)
     db_type = detect_database_type(connection_string)
     
-    engine = create_engine(normalized_connection_string)
+    # Use cached engine or create new one
+    engine = _get_cached_engine(connection_string)
     inspector = inspect(engine)
     
     try:
@@ -385,4 +540,23 @@ def validate_table_exists(
         return table_name in tables
     except:
         return False
+
+
+def clear_engine_cache():
+    """Clear all cached engines (useful for testing or when connections change)"""
+    global _engine_cache
+    for cache_key, (engine, _) in list(_engine_cache.items()):
+        try:
+            engine.dispose()
+        except:
+            pass
+    _engine_cache.clear()
+    print("[SYSTEM-CATALOG] 🗑️ Engine cache cleared")
+
+
+def clear_schema_cache():
+    """Clear all cached schema metadata (useful when schema changes)"""
+    global _schema_cache
+    _schema_cache.clear()
+    print("[SYSTEM-CATALOG] 🗑️ Schema cache cleared")
 

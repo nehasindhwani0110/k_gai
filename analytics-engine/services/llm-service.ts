@@ -104,8 +104,8 @@ When the user question mentions time-related terms (month, year, day, date, peri
    - Use the exact table name from metadata (usually filename without .csv extension)
    - Match column names exactly (case-sensitive, spelling-sensitive)
    - If column name is unclear or doesn't exist, use the closest matching column that DOES exist in the metadata
-   - **If user asks about "totalAnnualFee" but metadata shows "feeAmount", use "feeAmount"**
-   - **If user asks about something that doesn't exist, find the closest match in metadata**
+   - **If user asks about a concept but metadata shows a different column name, use the column name from metadata**
+   - **If user asks about something that doesn't exist, find the closest match in metadata OR use COUNT(*) for counting**
 
 3. **HANDLE DATE/TIME COLUMNS PROPERLY**:
    - When user asks about "time", "date", "month", "year", "day", "period", "over time", "trends":
@@ -226,8 +226,8 @@ When the user question mentions time-related terms (month, year, day, date, peri
      * Avoid LIKE patterns in JOIN conditions as they can create duplicate rows
      * If you must use LIKE or the query might return duplicates, add DISTINCT: "SELECT DISTINCT column1, column2 FROM..."
      * Or use GROUP BY with aggregations: "SELECT column1, SUM(column2) FROM ... GROUP BY column1"
-     * Example: Instead of "JOIN Fee ON Fee.applicableClasses LIKE CONCAT('%', FeeStructure.className, '%')", 
-       use exact match if possible, or add DISTINCT/GROUP BY to eliminate duplicates
+     * Example: Instead of using LIKE patterns in JOIN conditions that might create duplicates,
+       use exact matches if possible, or add DISTINCT/GROUP BY to eliminate duplicates
    - **CRITICAL FOR DIFFERENCE/COMPARISON QUERIES**:
      * When user asks about "differences", "compare", "versus", "vs", "measure differences":
        → Group by ALL relevant dimensions mentioned in the question
@@ -357,9 +357,16 @@ Generate only the JSON object, ensuring it is valid.
 **CRITICAL REMINDERS**: 
 - **MOST IMPORTANT**: Generate the SQL query that EXACTLY answers the user's question
 - **NEVER INVENT COLUMN NAMES** - You MUST ONLY use column names that are explicitly listed in the metadata above
+- **QUERY WILL FAIL IF YOU USE NON-EXISTENT COLUMNS** - The database will reject queries with unknown columns
 - **VERIFY BEFORE USING**: Before using any column name, check if it exists in the metadata tables provided
-- **If column doesn't exist**: Find the closest matching column that DOES exist (e.g., if user asks about "totalAnnualFee" but metadata shows "feeAmount", use "feeAmount")
+- **If column doesn't exist**: 
+  → Find the closest matching column that DOES exist in the metadata
+  → Check what columns DO exist in the table and use those instead of inventing names
+  → If counting and no specific column exists, use COUNT(*) instead of inventing a column name
 - Use exact column and table names from metadata - check the metadata carefully
+- **Example**: User asks about a concept but table metadata shows different column names
+  → CORRECT: Use the actual column names from metadata that match the concept - DO NOT invent column names
+  → WRONG: Using invented column names when they don't exist will cause query to fail
 - For "least/lowest/minimum" → ORDER BY column ASC LIMIT 1
 - For "most/highest/maximum" → ORDER BY column DESC LIMIT 1  
 - For "top N" → ORDER BY column DESC LIMIT N
@@ -632,7 +639,7 @@ export async function generateAdhocQuery(
     const dataSourceId = (reducedMetadata as any).data_source_id;
     
     // CRITICAL: First try exact table matching by key concepts
-    // This ensures "school" matches "School" table, not "PreviousSchool"
+    // This ensures exact matches are preferred over partial matches
     const keyConceptsLower = questionUnderstanding.keyConcepts.map((c: string) => c.toLowerCase());
     
     // Find exact table matches first (prefer tables that match key concepts exactly)
@@ -738,7 +745,7 @@ export async function generateAdhocQuery(
     }
     
     // Method 2: Extract from original question by removing action words and entity types
-    // Example: "show school Neha S" → "Neha S"
+    // Example: "show entity Multi Word Value" → "Multi Word Value"
     const actionWords = ['show', 'find', 'list', 'display', 'get', 'select', 'fetch', 'see', 'give'];
     const entityTypes = questionUnderstanding.keyConcepts.map(c => c.toLowerCase());
     
@@ -769,7 +776,7 @@ export async function generateAdhocQuery(
     questionUnderstanding.entities.forEach(entity => {
       const words = entity.split(/\s+/);
       if (words.length >= 2) {
-        const commonWords = ['school', 'student', 'teacher', 'class', 'name', 'table', 'college', 'graph', 'details'];
+        const commonWords = ['name', 'table', 'graph', 'details', 'show', 'find', 'list', 'get'];
         if (!commonWords.includes(entity.toLowerCase()) && !extractedValues.includes(entity)) {
           extractedValues.push(entity);
         }
@@ -812,23 +819,23 @@ export async function generateAdhocQuery(
     ? `\n\n**CRITICAL VALUE PRESERVATION RULES**:
 1. The user question contains these COMPLETE VALUES: ${extractedValues.map(v => `"${v}"`).join(', ')}
 2. These are SINGLE, COMPLETE values - do NOT split them into multiple parts
-3. Example: If user asks "show school Neha S", use WHERE schoolName = 'Neha S' ✅
-4. WRONG: WHERE schoolName = 'Neha' AND class = 'S' ❌ (DO NOT DO THIS!)
-5. If a value has multiple words (like "Neha S" or "MDU College"), preserve it as a SINGLE string literal
+3. Example: If user asks "show entity Multi Word Value", use WHERE entityColumn = 'Multi Word Value' ✅
+4. WRONG: WHERE entityColumn = 'Multi' AND category = 'Word Value' ❌ (DO NOT DO THIS!)
+5. If a value has multiple words, preserve it as a SINGLE string literal
 6. Use the EXACT value from the user question in WHERE clauses, do NOT split multi-word values`
     : '';
 
   const prompt = MASTER_PROMPT_TEMPLATE
     .replace('{MODE}', 'ADHOC_QUERY')
     .replace('{DATA_SOURCE_METADATA}', formatMetadata(reducedMetadata))
-    .replace('{USER_QUESTION}', `${userQuestion}${semanticContext}${detectedQueryInfo}${tableEmphasis}${valuePreservationInstructions}\n\n**CRITICAL COLUMN NAME RULES**:\n1. Use ONLY these exact column names: ${columnNamesList}${allColumnNames.length > 100 ? ' (and more - see metadata above)' : ''}\n2. Do NOT invent column names. If you need "class name" but see "currentClass" in the list above, use "currentClass" exactly.\n3. Check the metadata tables above for the EXACT column name before using it.\n4. If the user asks for something that doesn't exist, use the closest matching column from the list above.`);
+    .replace('{USER_QUESTION}', `${userQuestion}${semanticContext}${detectedQueryInfo}${tableEmphasis}${valuePreservationInstructions}\n\n**CRITICAL COLUMN NAME RULES**:\n1. Use ONLY these exact column names: ${columnNamesList}${allColumnNames.length > 100 ? ' (and more - see metadata above)' : ''}\n2. Do NOT invent column names. If you need a concept but see a different column name in the list above, use that exact column name.\n3. Check the metadata tables above for the EXACT column name before using it.\n4. If the user asks for something that doesn't exist, use the closest matching column from the list above OR use COUNT(*) for counting.`);
 
   const response = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
     messages: [
       {
         role: 'system',
-        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. **CRITICAL RULES - READ CAREFULLY:**\n\n1) **TABLE SELECTION IS CRITICAL**: If the prompt mentions "MOST RELEVANT table", you MUST use that exact table name. Do NOT use other tables. For example, if prompt says "Use table School", then use "School" not "PreviousSchool" or any other table. If user asks about "school", prefer "School" table over "PreviousSchool" unless explicitly asking about previous/old data.\n\n2) **VALUE PRESERVATION IS CRITICAL**: If the user question contains multi-word values (e.g., "Neha S", "MDU College", "John Smith"), preserve them as SINGLE, COMPLETE values in WHERE clauses.\n   - CORRECT: WHERE schoolName = \'Neha S\' ✅\n   - WRONG: WHERE schoolName = \'Neha\' AND class = \'S\' ❌\n   - WRONG: WHERE schoolName = \'Neha\' ❌ (missing part of value)\n   - If the prompt mentions "Extracted Values", use those EXACT values as single string literals\n   - NEVER split multi-word values into multiple conditions\n   - NEVER truncate values - use the complete value from the user question\n\n3) **NEVER INVENT COLUMN NAMES** - You MUST ONLY use column names that are EXPLICITLY listed in the metadata provided. If a column does not exist in the metadata, DO NOT use it. Check the metadata tables and columns carefully before using any column name.\n\n4) **COLUMN NAME MATCHING**: When the user asks about something (e.g., "class name"), look for the EXACT column name in the metadata. Common patterns:\n   - "class name" → look for columns like "className", "class_name", "currentClass", "current_class"\n   - "fee" → look for columns like "feeAmount", "fee_amount", "totalFee", "total_fee"\n   - If you see "className" in metadata, use "className". If you see "currentClass", use "currentClass". NEVER invent variations.\n\n5) **VERIFY BEFORE USING**: Before using ANY column name:\n   - Search the metadata tables for that EXACT column name\n   - If not found, look for similar names (e.g., "className" vs "currentClass")\n   - Use the EXACT column name from metadata, not a variation you invent\n   - If no match exists, use the closest matching column that DOES exist\n\n6) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR() - this ensures charts show multiple data points.\n\n7) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function.\n\n8) For "differences", "compare", "versus", "vs", "measure differences" questions: Group by ALL dimensions mentioned (e.g., "income bracket differences between parties" → GROUP BY income_bracket, party_affiliation) to enable comparison.\n\n9) **AVOID DUPLICATE ROWS**: When using JOINs, prefer exact matches (e.g., "ON table1.id = table2.id") over LIKE patterns. If you must use LIKE or the query might return duplicates, add DISTINCT or use GROUP BY with aggregations to eliminate duplicates.\n\n**REMEMBER**: The metadata contains the EXACT table and column names. Use them EXACTLY as shown. Never invent or guess names. Preserve complete values from user questions. Always return valid JSON only.',
+        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. **CRITICAL RULES - READ CAREFULLY:**\n\n1) **TABLE SELECTION IS CRITICAL**: If the prompt mentions "MOST RELEVANT table", you MUST use that exact table name. Do NOT use other tables. Use the exact table name from metadata, not variations or similar names.\n\n2) **VALUE PRESERVATION IS CRITICAL**: If the user question contains multi-word values, preserve them as SINGLE, COMPLETE values in WHERE clauses.\n   - CORRECT: WHERE columnName = \'Multi Word Value\' ✅\n   - WRONG: WHERE columnName = \'Multi\' AND otherColumn = \'Word Value\' ❌\n   - WRONG: WHERE columnName = \'Multi\' ❌ (missing part of value)\n   - If the prompt mentions "Extracted Values", use those EXACT values as single string literals\n   - NEVER split multi-word values into multiple conditions\n   - NEVER truncate values - use the complete value from the user question\n\n3) **NEVER INVENT COLUMN NAMES - THIS IS THE MOST CRITICAL RULE**: You MUST ONLY use column names that are EXPLICITLY listed in the metadata provided. If a column does not exist in the metadata, DO NOT use it. The query will FAIL if you use a non-existent column.\n   - ❌ WRONG: Using column names that don\'t exist in metadata\n   - ✅ CORRECT: Check metadata first, find the exact column name, use that exact name\n   - If user asks about a concept but the table has no matching column, you MUST find what columns DO exist and use those instead\n   - NEVER guess or invent column names based on the question - ALWAYS check metadata first\n\n4) **COLUMN NAME MATCHING - VERIFY EXISTS**: When the user asks about something:\n   - FIRST: Search the metadata tables for columns that match the concept\n   - Look for EXACT matches first, then similar names\n   - If NO column matches the concept, use the closest column that DOES exist\n   - If you cannot find ANY matching column, use COUNT(*) or a column that exists\n\n5) **VERIFY BEFORE USING - MANDATORY STEP**: Before using ANY column name in your query:\n   - Search the metadata tables for that EXACT column name\n   - Verify it exists in the table you\'re querying\n   - If not found, search for similar names\n   - Use the EXACT column name from metadata, not a variation you invent\n   - If no match exists, DO NOT use that column - find an alternative that DOES exist\n\n6) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR() - this ensures charts show multiple data points.\n\n7) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function.\n\n8) For "differences", "compare", "versus", "vs", "measure differences" questions: Group by ALL dimensions mentioned to enable comparison.\n\n9) **AVOID DUPLICATE ROWS**: When using JOINs, prefer exact matches (e.g., "ON table1.id = table2.id") over LIKE patterns. If you must use LIKE or the query might return duplicates, add DISTINCT or use GROUP BY with aggregations to eliminate duplicates.\n\n**REMEMBER**: The metadata contains the EXACT table and column names. Use them EXACTLY as shown. Never invent or guess names. Preserve complete values from user questions. Always return valid JSON only.',
       },
       {
         role: 'user',
@@ -847,7 +854,7 @@ export async function generateAdhocQuery(
   let result = JSON.parse(content) as AdhocQueryResponse;
   
   // CRITICAL: Post-process query to fix incorrectly split values
-  // Example: "Neha S" should not become WHERE column1 = 'Neha' AND column2 = 'S'
+  // Example: Multi-word values should not be split into multiple WHERE conditions
   if (result.query_content && questionUnderstanding && extractedValues.length > 0) {
     result.query_content = postProcessQueryForSplitValues(
       result.query_content,
@@ -857,25 +864,82 @@ export async function generateAdhocQuery(
     );
   }
   
-  // Validate that the query uses columns that exist in metadata
+  // CRITICAL: Validate that the query uses columns that exist in FULL schema metadata BEFORE returning
+  // Validation fetches FULL schema for tables in query (not limited columns)
   if (result.query_content && reducedMetadata.tables) {
-    const allColumnNames = new Set<string>();
-    reducedMetadata.tables.forEach(table => {
-      table.columns?.forEach(col => {
-        allColumnNames.add(col.name.toLowerCase());
-        // Also add table.column format
-        allColumnNames.add(`${table.name}.${col.name}`.toLowerCase());
-        allColumnNames.add(`${table.name.toLowerCase()}.${col.name.toLowerCase()}`);
-      });
-    });
+    const validationResult = await validateQueryColumns(result.query_content, reducedMetadata, connectionString);
     
-    // Extract column names from query (simple regex - may not catch all cases)
-    const queryLower = result.query_content.toLowerCase();
-    const columnMatches = queryLower.match(/\b(?:select|from|where|group by|order by|join|on)\s+([a-z_][a-z0-9_]*)\b/gi);
-    
-    if (columnMatches) {
-      console.log(`[LLM-SERVICE] ✅ Validating column names in generated query...`);
-      // Note: This is a basic check - the query executor will catch actual errors
+    if (!validationResult.isValid) {
+      console.error(`[LLM-SERVICE] ❌ Query validation failed: ${validationResult.errors.join(', ')}`);
+      console.log(`[LLM-SERVICE] 🔧 Attempting to fix query with FULL schema metadata...`);
+      
+      // Try to fix the query using LLM with FULL schema (validation already fetched it)
+      try {
+        // Get full metadata for fixing (validation function fetches it, but we need it here too)
+        let fullMetadataForFix = reducedMetadata;
+        if (connectionString && reducedMetadata.source_type === 'SQL_DB') {
+          const tableMatches = [
+            ...result.query_content.matchAll(/FROM\s+(\w+)(?:\s+(\w+))?/gi),
+            ...result.query_content.matchAll(/JOIN\s+(\w+)(?:\s+(\w+))?/gi),
+          ];
+          const queryTableNames = Array.from(new Set(
+            Array.from(tableMatches).map(m => m[1]).filter(Boolean)
+          ));
+          
+          if (queryTableNames.length > 0) {
+            try {
+              const { getTablesMetadata } = await import('./system-catalog-service');
+              const dataSourceId = (reducedMetadata as any).data_source_id;
+              if (dataSourceId) {
+                const { prisma } = await import('@/lib/prisma');
+                const dataSource = await prisma.dataSource.findUnique({
+                  where: { id: dataSourceId },
+                });
+                if (dataSource?.connectionString) {
+                  const fullTables = await getTablesMetadata(
+                    { connectionString: dataSource.connectionString },
+                    queryTableNames
+                  );
+                  fullMetadataForFix = {
+                    ...reducedMetadata,
+                    tables: fullTables,
+                  };
+                  console.log(`[LLM-SERVICE] ✅ Using FULL schema for fixing (${fullTables.length} tables with complete columns)`);
+                }
+              }
+            } catch (error) {
+              console.warn(`[LLM-SERVICE] ⚠️ Could not fetch full schema for fixing, using provided metadata:`, error);
+            }
+          }
+        }
+        
+        const fixedQuery = await fixQueryColumnsWithLLM(
+          result.query_content,
+          validationResult.invalidColumns,
+          fullMetadataForFix, // Use FULL metadata with all columns
+          userQuestion
+        );
+        
+        if (fixedQuery && fixedQuery !== result.query_content) {
+          console.log(`[LLM-SERVICE] ✅ Query fixed: ${validationResult.invalidColumns.join(', ')} → corrected`);
+          result.query_content = fixedQuery;
+          
+          // Validate again after fix (will fetch full schema again)
+          const revalidation = await validateQueryColumns(fixedQuery, reducedMetadata, connectionString);
+          if (!revalidation.isValid) {
+            console.warn(`[LLM-SERVICE] ⚠️ Query still has invalid columns after fix: ${revalidation.errors.join(', ')}`);
+          } else {
+            console.log(`[LLM-SERVICE] ✅ Query validation passed after fix`);
+          }
+        } else {
+          console.warn(`[LLM-SERVICE] ⚠️ Could not fix query, returning original (may fail at execution)`);
+        }
+      } catch (fixError) {
+        console.error(`[LLM-SERVICE] ❌ Failed to fix query:`, fixError);
+        // Continue with original query - executor will catch and fix it
+      }
+    } else {
+      console.log(`[LLM-SERVICE] ✅ Query validation passed - all columns exist in FULL schema`);
     }
   }
   
@@ -947,7 +1011,7 @@ export async function generateDashboardMetrics(
 
 /**
  * Post-process SQL query to fix incorrectly split values
- * Example: "Neha S" should not become WHERE column1 = 'Neha' AND column2 = 'S'
+ * Example: Multi-word values should not be split into multiple WHERE conditions
  */
 function postProcessQueryForSplitValues(
   query: string,
@@ -1492,6 +1556,285 @@ async function reduceMetadataForAdhocQuery(
     console.error('[LLM-SERVICE] Metadata reduction failed, using first 10 tables:', error);
     // Last resort: use first 10 tables
     return createReducedMetadata(metadata, allTables.slice(0, 10).map(t => t.name));
+  }
+}
+
+/**
+ * Validates that all columns in a SQL query exist in the metadata
+ * CRITICAL: Fetches FULL schema metadata for validation (not limited columns)
+ */
+async function validateQueryColumns(
+  query: string,
+  metadata: DataSourceMetadata,
+  connectionString?: string
+): Promise<{
+  isValid: boolean;
+  invalidColumns: string[];
+  errors: string[];
+}> {
+  const invalidColumns: string[] = [];
+  const errors: string[] = [];
+  
+  // CRITICAL: Extract tables from query to fetch FULL schema metadata
+  const tableMatches = [
+    ...query.matchAll(/FROM\s+(\w+)(?:\s+(\w+))?/gi),
+    ...query.matchAll(/JOIN\s+(\w+)(?:\s+(\w+))?/gi),
+  ];
+  
+  const queryTableNames = new Set<string>();
+  tableMatches.forEach(match => {
+    if (match[1]) queryTableNames.add(match[1]);
+  });
+  
+  // CRITICAL: Fetch FULL schema metadata for tables used in query (not limited columns)
+  let fullMetadata = metadata;
+  if (connectionString && metadata.source_type === 'SQL_DB' && queryTableNames.size > 0) {
+    try {
+      console.log(`[LLM-SERVICE] 🔍 Fetching FULL schema metadata for validation (tables: ${Array.from(queryTableNames).join(', ')})`);
+      const { getTablesMetadata } = await import('./system-catalog-service');
+      const dataSourceId = (metadata as any).data_source_id;
+      
+      if (dataSourceId) {
+        const { prisma } = await import('@/lib/prisma');
+        const dataSource = await prisma.dataSource.findUnique({
+          where: { id: dataSourceId },
+        });
+        
+        if (dataSource?.connectionString) {
+          const fullTables = await getTablesMetadata(
+            { connectionString: dataSource.connectionString },
+            Array.from(queryTableNames)
+          );
+          
+          // Build full column map from complete schema
+          fullMetadata = {
+            ...metadata,
+            tables: fullTables,
+          };
+          console.log(`[LLM-SERVICE] ✅ Fetched FULL schema: ${fullTables.length} tables with complete columns`);
+        }
+      }
+    } catch (error) {
+      console.warn(`[LLM-SERVICE] ⚠️ Could not fetch full schema for validation, using provided metadata:`, error);
+      // Continue with provided metadata
+    }
+  }
+  
+  // Build column map from FULL metadata (all columns, not limited)
+  const columnMap = new Map<string, Set<string>>(); // table -> set of columns
+  const allColumns = new Set<string>();
+  
+  fullMetadata.tables?.forEach(table => {
+    const tableColumns = new Set<string>();
+    table.columns?.forEach(col => {
+      const colLower = col.name.toLowerCase();
+      tableColumns.add(colLower);
+      allColumns.add(colLower);
+      // Also add table.column format
+      allColumns.add(`${table.name.toLowerCase()}.${colLower}`);
+    });
+    columnMap.set(table.name.toLowerCase(), tableColumns);
+  });
+  
+  // Extract table names from query (already extracted above, reuse)
+  const queryTables = new Map<string, string>(); // alias -> actual table name
+  tableMatches.forEach(match => {
+    const tableName = match[1];
+    const alias = match[2] || match[4];
+    if (tableName) {
+      queryTables.set(tableName.toLowerCase(), tableName.toLowerCase());
+      if (alias) {
+        queryTables.set(alias.toLowerCase(), tableName.toLowerCase());
+      }
+    }
+  });
+  
+  // Extract column references from query
+  // CRITICAL: Skip SQL aliases (AS alias_name) and functions (GROUP_CONCAT, COUNT, etc.)
+  // Only validate actual column references, not aliases or function names
+  
+  // SQL keywords and functions to skip
+  const sqlKeywords = new Set([
+    'select', 'from', 'where', 'group', 'by', 'order', 'join', 'inner', 'outer',
+    'left', 'right', 'on', 'and', 'or', 'not', 'in', 'like', 'between', 'is',
+    'null', 'as', 'distinct', 'count', 'sum', 'avg', 'max', 'min', 'case',
+    'when', 'then', 'else', 'end', 'limit', 'offset', 'having', 'union',
+    'group_concat', 'concat', 'date', 'year', 'month', 'day', 'upper', 'lower',
+    'trim', 'substring', 'coalesce', 'ifnull', 'cast', 'convert'
+  ]);
+  
+  // Get all table names (case-insensitive) to skip them
+  const allTableNamesLower = new Set(
+    Array.from(queryTableNames).map(t => t.toLowerCase())
+  );
+  
+  // Extract column references more carefully:
+  // 1. Match table.column patterns
+  // 2. Match bare columns in SELECT, WHERE, GROUP BY, ORDER BY, JOIN ON
+  // 3. Skip aliases (anything after AS)
+  // 4. Skip function calls (GROUP_CONCAT(...), COUNT(...), etc.)
+  
+  // Pattern 1: table.column (e.g., FeeStructure.className)
+  const tableColumnPattern = /\b(\w+)\.(\w+)\b/gi;
+  const tableColumnMatches = Array.from(query.matchAll(tableColumnPattern));
+  
+  // Pattern 2: Bare columns in SELECT clause (before FROM)
+  const selectClause = query.match(/SELECT\s+(.*?)\s+FROM/gi)?.[0] || '';
+  // Remove function calls and aliases from SELECT clause
+  const cleanedSelect = selectClause
+    .replace(/\b(GROUP_CONCAT|CONCAT|COUNT|SUM|AVG|MAX|MIN|DATE|YEAR|MONTH|DAY|UPPER|LOWER|TRIM|SUBSTRING|COALESCE|IFNULL|CAST|CONVERT)\s*\([^)]*\)/gi, '')
+    .replace(/\bAS\s+\w+/gi, '')
+    .replace(/\([^)]*\)/g, '');
+  
+  const bareColumnPattern = /\b(\w+)\b/gi;
+  const bareColumnMatches = Array.from(cleanedSelect.matchAll(bareColumnPattern));
+  
+  const seenColumns = new Set<string>();
+  
+  // Validate table.column patterns (e.g., FeeStructure.className)
+  for (const match of tableColumnMatches) {
+    const tableName = match[1].toLowerCase();
+    const columnName = match[2].toLowerCase();
+    
+    // Skip if it's a SQL keyword
+    if (sqlKeywords.has(columnName) || sqlKeywords.has(tableName)) continue;
+    
+    // Find the actual table (handle case-insensitive matching)
+    const actualTable = queryTables.get(tableName) || 
+                        Array.from(queryTables.values()).find(t => t.toLowerCase() === tableName);
+    
+    if (actualTable) {
+      const tableColumns = columnMap.get(actualTable.toLowerCase());
+      if (tableColumns && !tableColumns.has(columnName)) {
+        const key = `${tableName}.${columnName}`;
+        if (!seenColumns.has(key)) {
+          invalidColumns.push(key);
+          errors.push(`Column "${columnName}" does not exist in table "${actualTable}"`);
+          seenColumns.add(key);
+        }
+      }
+    }
+  }
+  
+  // Validate bare columns in SELECT clause (excluding functions and aliases)
+  for (const match of bareColumnMatches) {
+    const columnName = match[1].toLowerCase();
+    
+    // Skip SQL keywords and functions
+    if (sqlKeywords.has(columnName)) continue;
+    
+    // Skip if it's a table name (case-insensitive)
+    if (allTableNamesLower.has(columnName)) continue;
+    
+    // Check if column exists in any query table
+    let found = false;
+    for (const [alias, actualTable] of queryTables) {
+      const tableColumns = columnMap.get(actualTable.toLowerCase());
+      if (tableColumns && tableColumns.has(columnName)) {
+        found = true;
+        break;
+      }
+    }
+    
+    if (!found && !allColumns.has(columnName)) {
+      const key = columnName;
+      if (!seenColumns.has(key)) {
+        invalidColumns.push(key);
+        errors.push(`Column "${columnName}" does not exist in any table used in the query`);
+        seenColumns.add(key);
+      }
+    }
+  }
+  
+  return {
+    isValid: invalidColumns.length === 0,
+    invalidColumns,
+    errors
+  };
+}
+
+/**
+ * Fixes query columns using LLM when validation fails
+ */
+async function fixQueryColumnsWithLLM(
+  query: string,
+  invalidColumns: string[],
+  metadata: DataSourceMetadata,
+  userQuestion: string
+): Promise<string> {
+  try {
+    // Build schema context for tables used in query
+    const tableMatches = [
+      ...query.matchAll(/FROM\s+(\w+)(?:\s+(\w+))?/gi),
+      ...query.matchAll(/JOIN\s+(\w+)(?:\s+(\w+))?/gi),
+    ];
+    
+    const queryTables = new Set<string>();
+    tableMatches.forEach(match => {
+      if (match[1]) queryTables.add(match[1].toLowerCase());
+    });
+    
+    let schemaContext = '';
+    metadata.tables?.forEach(table => {
+      if (queryTables.has(table.name.toLowerCase())) {
+        const columns = table.columns?.map(c => c.name).join(', ') || 'none';
+        schemaContext += `\nTable ${table.name}: ${columns}`;
+      }
+    });
+    
+    const { createTracedOpenAI } = await import('../utils/langsmith-tracer');
+    const openai = createTracedOpenAI();
+    
+    const prompt = `Fix this SQL query by replacing invalid columns with correct ones from the schema.
+
+Original Query:
+${query}
+
+Invalid Columns: ${invalidColumns.join(', ')}
+
+Available Schema:${schemaContext}
+
+${userQuestion ? `User Question: "${userQuestion}"\n` : ''}
+
+CRITICAL REQUIREMENTS:
+1. Replace ONLY the invalid columns with correct column names from the schema above
+2. Maintain the EXACT intent and logic of the original query
+3. Use EXACT column names from the schema - do NOT invent new names
+4. Find columns in the schema that match the concept/intent of the invalid column
+5. Keep all other parts of the query identical (WHERE, GROUP BY, ORDER BY, etc.)
+6. Return ONLY the corrected SQL query, no explanations
+
+Return ONLY the corrected SQL query:`;
+
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an expert SQL query fixer. Fix column name errors by replacing invalid columns with correct ones from the provided schema. Never invent column names - only use columns that exist in the schema.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 800,
+    });
+
+    const fixedQuery = response.choices[0]?.message?.content?.trim() || query;
+    
+    // Clean up query
+    const cleanedQuery = fixedQuery
+      .replace(/^```sql\s*/i, '')
+      .replace(/```\s*$/i, '')
+      .replace(/^```\s*/i, '')
+      .trim();
+
+    return cleanedQuery;
+  } catch (error) {
+    console.error('[LLM-SERVICE] Error fixing query columns:', error);
+    return query;
   }
 }
 
