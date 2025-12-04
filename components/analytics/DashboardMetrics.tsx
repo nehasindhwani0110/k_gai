@@ -5,9 +5,105 @@ import { toast } from 'react-hot-toast';
 import { DashboardMetricsResponse, DashboardMetric, VisualizationType } from '@/analytics-engine/types';
 import VisualizationRenderer from './VisualizationRenderer';
 import { autoSelectVisualizationType } from '@/analytics-engine/services/visualization-selector';
+import EnhancedDataModal from './EnhancedDataModal';
 
 interface DashboardMetricsProps {
   metadata: any;
+}
+
+// Helper function to generate fallback metrics when queries return empty
+async function generateFallbackMetrics(
+  metadata: any,
+  existingMetrics: DashboardMetric[]
+): Promise<DashboardMetric[]> {
+  try {
+    const fallbacks: DashboardMetric[] = [];
+    const tables = metadata?.tables || [];
+    
+    if (tables.length === 0) return fallbacks;
+    
+    const firstTable = tables[0];
+    const tableName = firstTable.name;
+    const columns = firstTable.columns || [];
+    
+    // Find numeric columns
+    const numericCols = columns.filter((c: any) => 
+      c.type && ['INT', 'DECIMAL', 'FLOAT', 'DOUBLE', 'NUMERIC', 'INTEGER'].some(t => 
+        c.type.toUpperCase().includes(t)
+      )
+    );
+    
+    // Find category columns
+    const categoryCols = columns.filter((c: any) => 
+      c.type && ['VARCHAR', 'TEXT', 'CHAR', 'STRING'].some(t => 
+        c.type.toUpperCase().includes(t)
+      )
+    );
+    
+    // Generate simple COUNT query (always works)
+    if (!existingMetrics.some(m => m.query_content?.includes('COUNT(*)') && !m.query_content?.includes('GROUP BY'))) {
+      fallbacks.push({
+        metric_name: `Total Records in ${tableName}`,
+        query_type: 'SQL_QUERY',
+        query_content: `SELECT COUNT(*) as total_count FROM ${tableName}`,
+        visualization_type: 'gauge',
+        insight_summary: `Total number of records in ${tableName}`
+      });
+    }
+    
+    // Generate category distribution if we have category columns
+    if (categoryCols.length > 0 && !existingMetrics.some(m => m.query_content?.includes(`GROUP BY ${categoryCols[0].name}`))) {
+      const catCol = categoryCols[0].name;
+      fallbacks.push({
+        metric_name: `Distribution by ${catCol}`,
+        query_type: 'SQL_QUERY',
+        query_content: `SELECT ${catCol}, COUNT(*) as count FROM ${tableName} GROUP BY ${catCol} ORDER BY count DESC LIMIT 10`,
+        visualization_type: 'pie_chart',
+        insight_summary: `Distribution of records by ${catCol}`
+      });
+    }
+    
+    // Generate average if we have numeric columns
+    if (numericCols.length > 0 && !existingMetrics.some(m => m.query_content?.includes(`AVG(${numericCols[0].name})`))) {
+      const numCol = numericCols[0].name;
+      fallbacks.push({
+        metric_name: `Average ${numCol}`,
+        query_type: 'SQL_QUERY',
+        query_content: `SELECT AVG(${numCol}) as avg_value FROM ${tableName} WHERE ${numCol} IS NOT NULL`,
+        visualization_type: 'gauge',
+        insight_summary: `Average value of ${numCol}`
+      });
+    }
+    
+    return fallbacks;
+  } catch (error) {
+    console.error('[DASHBOARD] Error generating fallback metrics:', error);
+    return [];
+  }
+}
+
+// Generate simple fallback metrics that are guaranteed to work
+async function generateSimpleFallbackMetrics(
+  metadata: any
+): Promise<DashboardMetric[]> {
+  const simple: DashboardMetric[] = [];
+  const tables = metadata?.tables || [];
+  
+  if (tables.length === 0) return simple;
+  
+  const firstTable = tables[0];
+  const tableName = firstTable.name;
+  
+  // Always generate a simple COUNT - this will always work
+  simple.push({
+    metric_name: `Total Records`,
+    query_type: 'SQL_QUERY',
+    query_content: `SELECT COUNT(*) as total_count FROM ${tableName}`,
+    visualization_type: 'gauge',
+    insight_summary: `Total number of records in the database`
+  });
+  
+  return simple;
 }
 
 export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
@@ -77,20 +173,81 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
       console.log(`[DASHBOARD] Received ${allMetrics.length} metrics from API`);
       
       // Execute queries for all metrics and collect results
-      // Show ALL metrics regardless of errors - let users see what's available
+      // Filter out metrics that return empty data
+      const metricsWithData: DashboardMetric[] = [];
+      const metricsWithoutData: DashboardMetric[] = [];
+      
       for (const metric of allMetrics) {
-        await executeMetricQuery(metric);
+        const result = await executeMetricQuery(metric);
+        if (result.hasData && !result.hasError) {
+          metricsWithData.push(metric);
+        } else {
+          metricsWithoutData.push(metric);
+          console.warn(`[DASHBOARD] Metric "${metric.metric_name}" returned no data or had errors`);
+        }
       }
       
-      // Always show all metrics - errors will be displayed in the UI
-      setMetrics(allMetrics);
-      console.log(`[DASHBOARD] Displaying all ${allMetrics.length} metrics`);
+      // If we have empty metrics, try to generate fallback queries
+      if (metricsWithoutData.length > 0 && metricsWithData.length < 3) {
+        console.log(`[DASHBOARD] ${metricsWithoutData.length} metrics returned empty data, generating fallback queries...`);
+        const fallbackMetrics = await generateFallbackMetrics(metadata, metricsWithData);
+        for (const fallback of fallbackMetrics) {
+          const result = await executeMetricQuery(fallback);
+          if (result.hasData && !result.hasError) {
+            metricsWithData.push(fallback);
+          }
+        }
+      }
+      
+      // Only show metrics with data - never show empty metrics
+      if (metricsWithData.length === 0) {
+        // Last resort: generate simple COUNT queries that are guaranteed to work
+        console.log(`[DASHBOARD] No metrics returned data, generating simple fallback queries...`);
+        const simpleMetrics = await generateSimpleFallbackMetrics(metadata);
+        for (const simple of simpleMetrics) {
+          const result = await executeMetricQuery(simple);
+          if (result.hasData && !result.hasError) {
+            metricsWithData.push(simple);
+          }
+        }
+      }
+      
+      // Only set metrics that have data
+      setMetrics(metricsWithData);
+      console.log(`[DASHBOARD] Displaying ${metricsWithData.length} metrics with data (filtered out ${metricsWithoutData.length} empty metrics)`);
+      
+      if (metricsWithData.length === 0) {
+        toast.error('No dashboard metrics could be generated. Please check your data source.');
+      } else if (metricsWithoutData.length > 0) {
+        toast(`${metricsWithoutData.length} metrics were filtered out due to empty results. Showing ${metricsWithData.length} working metrics.`, {
+          icon: '⚠️',
+          duration: 5000,
+        });
+      }
     } catch (error) {
       console.error('Error:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to load dashboard metrics');
     } finally {
       setLoading(false);
     }
+  };
+
+  // Helper function to check if data is effectively empty (all null/empty values)
+  const isDataEffectivelyEmpty = (data: any[]): boolean => {
+    if (!Array.isArray(data) || data.length === 0) return true;
+    
+    // Check if all rows have all null/empty/undefined values
+    return data.every(row => {
+      if (!row || typeof row !== 'object') return true;
+      const values = Object.values(row);
+      return values.every(val => 
+        val === null || 
+        val === undefined || 
+        val === '' || 
+        (typeof val === 'string' && val.trim() === '') ||
+        (typeof val === 'number' && isNaN(val))
+      );
+    });
   };
 
   const executeMetricQuery = async (metric: DashboardMetric): Promise<{ hasData: boolean; hasError: boolean }> => {
@@ -103,14 +260,11 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
       };
 
       // ALWAYS include file_path if it exists in metadata (regardless of source_type)
-      // This ensures file-based sources work correctly
       if (metadata?.file_path) {
         requestBody.file_path = metadata.file_path;
-        // Use the actual source_type from metadata, or detect from file extension
         if (metadata?.source_type && ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'].includes(metadata.source_type)) {
           requestBody.source_type = metadata.source_type;
         } else {
-          // Fallback: detect from file extension
           const ext = metadata.file_path.toLowerCase().split('.').pop();
           if (ext === 'xlsx' || ext === 'xls') {
             requestBody.source_type = 'EXCEL_FILE';
@@ -126,12 +280,10 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
             requestBody.file_type = 'CSV';
           }
         }
-        // Include file_type if available in metadata
         if (metadata?.file_type) {
           requestBody.file_type = metadata.file_type;
         }
       } else if (metadata?.source_type && ['CSV_FILE', 'EXCEL_FILE', 'JSON_FILE', 'TXT_FILE', 'GOOGLE_DRIVE'].includes(metadata.source_type)) {
-        // CSV source type but no file_path - error
         console.error(`Missing file_path for CSV_FILE source type in metric: ${metric.metric_name}`);
         setMetricResults((prev) => ({
           ...prev,
@@ -140,20 +292,16 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
         }));
         return { hasData: false, hasError: true };
       } else {
-        // For SQL databases, get connection_string from multiple sources
         let connectionString = metadata?.connection_string;
         
-        // If not in metadata, try to fetch from data source API
         if (!connectionString && typeof window !== 'undefined') {
           const dataSourceId = sessionStorage.getItem('dataSourceId');
           if (dataSourceId) {
             try {
-              // Fetch source metadata which includes connection_string
               const sourceResponse = await fetch(`/api/analytics/data-sources/${dataSourceId}/schema?type=source`);
               if (sourceResponse.ok) {
                 const sourceMetadata = await sourceResponse.json();
                 connectionString = sourceMetadata.connection_string;
-                // Update metadata with connection_string for future use
                 if (connectionString && metadata) {
                   metadata.connection_string = connectionString;
                 }
@@ -164,7 +312,6 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
           }
         }
         
-        // Fallback to sessionStorage or env variable
         if (!connectionString && typeof window !== 'undefined') {
           connectionString = sessionStorage.getItem('connectionString') || undefined;
         }
@@ -195,7 +342,8 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
       if (response.ok) {
         const data = await response.json();
         const results = data.results || [];
-        const hasData = Array.isArray(results) && results.length > 0;
+        // Check both if results exist AND if they contain actual data (not all null/empty)
+        const hasData = Array.isArray(results) && results.length > 0 && !isDataEffectivelyEmpty(results);
         
         setMetricResults((prev) => ({
           ...prev,
@@ -208,35 +356,16 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
         const errorMessage = errorData.error || errorData.details || 'Query execution failed';
         console.error(`Error executing query for ${metric.metric_name}:`, errorMessage);
         
-        // Set error state (empty array with error flag)
         setMetricResults((prev) => ({
           ...prev,
           [metric.metric_name]: [],
           [`${metric.metric_name}_error`]: errorMessage,
         }));
         
-        // Show warning toast for backend connection errors
-        if (errorMessage.includes('Python backend') || errorMessage.includes('BackendConnectionError') || errorMessage.includes('Cannot connect') || errorMessage.includes('ECONNREFUSED')) {
-          toast.error(`Backend Connection Error: Python backend is not running. Please start it with: npm run python:backend`, {
-            duration: 10000,
-          });
-        }
-        // Show warning toast for SQL errors (column, table, syntax issues)
-        else if (errorMessage.includes('syntax') || errorMessage.includes('column') || errorMessage.includes('table') || errorMessage.includes('Column error') || errorMessage.includes('Table error')) {
-          // Extract the actual error message (after colon if present)
-          const actualError = errorMessage.includes(':') 
-            ? errorMessage.split(':').slice(1).join(':').trim()
-            : errorMessage;
-          toast.error(`Query error for "${metric.metric_name}": ${actualError.substring(0, 150)}`, {
-            duration: 6000,
-          });
-        }
-        
         return { hasData: false, hasError: true };
       }
     } catch (error) {
       console.error(`Error executing query for ${metric.metric_name}:`, error);
-      // Set empty results to show error state
       setMetricResults((prev) => ({
         ...prev,
         [metric.metric_name]: [],
@@ -261,7 +390,7 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
   const formatTimeUntilRefresh = () => {
     const now = new Date();
     const timeSinceRefresh = now.getTime() - lastRefresh.getTime();
-    const timeUntilNextRefresh = 3600000 - timeSinceRefresh; // 1 hour in ms
+    const timeUntilNextRefresh = 3600000 - timeSinceRefresh;
     
     if (timeUntilNextRefresh <= 0) return 'Refreshing...';
     
@@ -275,6 +404,34 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
     setLastRefresh(new Date());
     toast.success('Dashboard refreshed');
   };
+
+  // Don't render if no metrics with data
+  if (metrics.length === 0) {
+    return (
+      <div className="w-full max-w-7xl mx-auto p-6">
+        <div className="bg-yellow-50 border-2 border-yellow-200 rounded-xl p-8 text-center">
+          <svg className="w-16 h-16 text-yellow-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          <h3 className="text-xl font-bold text-yellow-800 mb-2">No Dashboard Metrics Available</h3>
+          <p className="text-yellow-700 mb-4">
+            Unable to generate dashboard metrics from your data source. This could be due to:
+          </p>
+          <ul className="text-left text-yellow-700 max-w-md mx-auto space-y-2 mb-6">
+            <li>• Empty tables or no data in the database</li>
+            <li>• Schema mismatch or missing columns</li>
+            <li>• Connection issues with the data source</li>
+          </ul>
+          <button
+            onClick={handleManualRefresh}
+            className="px-6 py-3 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition-colors font-semibold"
+          >
+            Try Again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full max-w-7xl mx-auto p-6">
@@ -313,7 +470,8 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {metrics.map((metric, index) => {
           const metricData = metricResults[metric.metric_name];
-          const hasData = Array.isArray(metricData) && metricData.length > 0;
+          // Check both if results exist AND if they contain actual data (not all null/empty)
+          const hasData = Array.isArray(metricData) && metricData.length > 0 && !isDataEffectivelyEmpty(metricData);
           const isLoading = metricData === undefined;
           const errorData = metricResults[`${metric.metric_name}_error`];
           const hasError = typeof errorData === 'string' ? errorData : undefined;
@@ -364,13 +522,10 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
                           <code className="block bg-yellow-200 text-yellow-900 px-4 py-3 rounded font-mono text-xs mt-2 border border-yellow-300">
                             npm run python:backend
                           </code>
-                          <p className="text-xs mt-2 opacity-75">Or manually: cd analytics-engine/python-backend && python api_server.py</p>
                         </div>
                       ) : (
                         <>
-                          <p className="font-medium">
-                            {hasError.includes(':') ? hasError.split(':')[0] + ':' : 'Error:'}
-                          </p>
+                          <p className="font-medium">Error:</p>
                           <p className="bg-red-100 rounded p-3 text-xs font-mono break-words">
                             {hasError.includes(':') 
                               ? hasError.split(':').slice(1).join(':').trim()
@@ -379,11 +534,6 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
                         </>
                       )}
                     </div>
-                    {!(hasError.includes('Python backend') || hasError.includes('BackendConnectionError') || hasError.includes('Cannot connect')) && (
-                      <p className="text-xs text-red-500 mt-4 opacity-75">
-                        This metric could not be loaded. The query may need refinement or the columns/tables may not exist.
-                      </p>
-                    )}
                   </div>
                 ) : isLoading ? (
                   <div className="flex flex-col items-center justify-center h-80">
@@ -395,10 +545,8 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
                     const rawVizType = metric.visualization_type;
                     let vizType: VisualizationType;
                     
-                    // Auto-select visualization type if needed
                     const metricDataArray = Array.isArray(metricData) ? metricData : [];
                     if (rawVizType === 'auto' || !rawVizType || typeof rawVizType !== 'string') {
-                      // Use metric name as context (it often contains the question intent)
                       vizType = autoSelectVisualizationType(
                         metricDataArray,
                         metric.query_content || '',
@@ -408,38 +556,11 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
                       vizType = rawVizType as VisualizationType;
                     }
                     
-                    // Ensure we have a valid type
                     if (!vizType || vizType === 'auto') {
                       vizType = 'table';
                     }
                     
-                    // Debug logging
-                    console.log(`[DashboardMetrics] Rendering ${metric.metric_name}:`, {
-                      vizType,
-                      dataLength: metricDataArray.length,
-                      sampleData: metricDataArray[0],
-                      keys: metricDataArray.length > 0 ? Object.keys(metricDataArray[0]) : [],
-                      hasData,
-                      metricData: metricData,
-                      query: metric.query_content?.substring(0, 100)
-                    });
-                    
-                    // Log any potential data issues
-                    if (metricDataArray.length > 0) {
-                      const firstRow = metricDataArray[0];
-                      const keys = Object.keys(firstRow);
-                      console.log(`[DashboardMetrics] Data structure for ${metric.metric_name}:`, {
-                        columns: keys,
-                        sampleValues: keys.reduce((acc, key) => {
-                          acc[key] = `${typeof firstRow[key]} (${String(firstRow[key]).substring(0, 30)})`;
-                          return acc;
-                        }, {} as Record<string, string>)
-                      });
-                    }
-                    
-                    // Ensure we have valid data
                     if (!metricDataArray || metricDataArray.length === 0) {
-                      console.warn(`[DashboardMetrics] No data for ${metric.metric_name}, but hasData is true`);
                       return (
                         <div className="flex flex-col items-center justify-center h-80 bg-yellow-50 rounded-xl border-2 border-dashed border-yellow-200">
                           <p className="text-yellow-600">Data array is empty</p>
@@ -449,7 +570,7 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
                     
                     return (
                       <div 
-                        className="cursor-pointer hover:opacity-90 transition-opacity group w-full"
+                        className="cursor-pointer hover:scale-[1.02] transition-all duration-300 group w-full relative"
                         onClick={() => setSelectedMetric({ metric, data: metricDataArray })}
                         title="Click to view detailed data"
                       >
@@ -459,8 +580,20 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
                             data={metricDataArray}
                             title={metric.metric_name}
                           />
-                          <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-blue-600 text-white text-xs px-2 py-1 rounded z-20 pointer-events-none">
-                            Click for details
+                          <div className="absolute inset-0 bg-gradient-to-br from-blue-600/0 to-purple-600/0 group-hover:from-blue-600/5 group-hover:to-purple-600/5 rounded-xl transition-all duration-300 pointer-events-none z-10" />
+                          <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-all duration-300 transform translate-y-2 group-hover:translate-y-0 z-20 pointer-events-none">
+                            <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white text-xs px-4 py-2 rounded-lg shadow-xl flex items-center gap-2">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                              </svg>
+                              <span className="font-semibold">Click for detailed view</span>
+                            </div>
+                          </div>
+                          <div className="absolute bottom-4 left-4 opacity-0 group-hover:opacity-100 transition-all duration-300 transform translate-y-2 group-hover:translate-y-0 z-20 pointer-events-none">
+                            <div className="bg-white/90 backdrop-blur-sm text-gray-700 text-xs px-3 py-1.5 rounded-lg shadow-lg border border-gray-200">
+                              <span className="font-medium">{metricDataArray.length} records</span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -492,88 +625,15 @@ export default function DashboardMetrics({ metadata }: DashboardMetricsProps) {
         })}
       </div>
 
-      {/* Data Details Modal */}
+      {/* Enhanced Data Details Modal */}
       {selectedMetric && (
-        <div 
-          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
-          onClick={() => setSelectedMetric(null)}
-        >
-          <div 
-            className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal Header */}
-            <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white p-6 flex items-center justify-between">
-              <div>
-                <h2 className="text-2xl font-bold mb-2">{selectedMetric.metric.metric_name}</h2>
-                <p className="text-blue-100 text-sm">{selectedMetric.metric.insight_summary}</p>
-              </div>
-              <button
-                onClick={() => setSelectedMetric(null)}
-                className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors"
-                aria-label="Close modal"
-              >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Modal Content */}
-            <div className="flex-1 overflow-auto p-6">
-              {/* Query Info */}
-              <div className="mb-6 bg-gray-50 rounded-lg p-4">
-                <h3 className="font-semibold text-gray-700 mb-2">Generated Query:</h3>
-                <pre className="bg-white p-3 rounded border overflow-x-auto text-sm font-mono">
-                  {selectedMetric.metric.query_content}
-                </pre>
-              </div>
-
-              {/* Data Table */}
-              <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-                <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
-                  <h3 className="font-semibold text-gray-700">
-                    Data ({selectedMetric.data.length} {selectedMetric.data.length === 1 ? 'row' : 'rows'})
-                  </h3>
-                </div>
-                <div className="overflow-x-auto max-h-[400px]">
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-50 sticky top-0">
-                      <tr>
-                        {selectedMetric.data.length > 0 && Object.keys(selectedMetric.data[0]).map((key) => (
-                          <th key={key} className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200">
-                            {key}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {selectedMetric.data.map((row, index) => (
-                        <tr key={index} className="hover:bg-gray-50 transition-colors">
-                          {Object.values(row).map((value: any, cellIndex) => (
-                            <td key={cellIndex} className="px-4 py-3 text-gray-700 whitespace-nowrap">
-                              {typeof value === 'number' ? value.toLocaleString() : String(value || '-')}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end">
-              <button
-                onClick={() => setSelectedMetric(null)}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <EnhancedDataModal
+          title={selectedMetric.metric.metric_name}
+          query={selectedMetric.metric.query_content}
+          data={selectedMetric.data}
+          insightSummary={selectedMetric.metric.insight_summary}
+          onClose={() => setSelectedMetric(null)}
+        />
       )}
     </div>
   );

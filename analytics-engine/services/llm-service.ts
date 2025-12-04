@@ -95,6 +95,14 @@ When the user question mentions time-related terms (month, year, day, date, peri
      * "compare" or "comparison" → Group by categories and show side-by-side metrics
      * "versus" or "vs" → Compare two groups/categories
      * "measure differences" → Calculate metrics for each group to enable comparison
+     * **"by X" or "grouped by X"** → **ALWAYS means GROUP BY X, NEVER WHERE X = value**
+       - ✅ CORRECT: "average time by student names" → SELECT Student.name, AVG(timeTaken) FROM QuizAttempt JOIN Student ON QuizAttempt.studentId = Student.id GROUP BY Student.name
+       - ❌ WRONG: "average time by student names" → SELECT AVG(timeTaken) FROM QuizAttempt WHERE studentName = 'by student names' (THIS IS COMPLETELY WRONG!)
+       - ✅ CORRECT: "count by category" → SELECT category, COUNT(*) FROM table GROUP BY category
+       - ❌ WRONG: "count by category" → SELECT COUNT(*) FROM table WHERE category = 'by category' (THIS IS WRONG!)
+       - **PATTERN**: When user says "metric by dimension", it means GROUP BY dimension
+       - **IF dimension is a name/entity** (like "student names", "class names"): JOIN with the related table to get the name, then GROUP BY that name
+       - **NEVER** treat "by X" as a WHERE clause filter value - it's ALWAYS a GROUP BY requirement
    - Generate SQL that directly answers the question
 
 2. **USE EXACT COLUMN AND TABLE NAMES FROM METADATA (CRITICAL - NO EXCEPTIONS)**:
@@ -107,7 +115,7 @@ When the user question mentions time-related terms (month, year, day, date, peri
    - **If user asks about a concept but metadata shows a different column name, use the column name from metadata**
    - **If user asks about something that doesn't exist, find the closest match in metadata OR use COUNT(*) for counting**
 
-3. **HANDLE DATE/TIME COLUMNS PROPERLY**:
+3. **HANDLE DATE/TIME COLUMNS PROPERLY WITH PROPER FORMATTING**:
    - When user asks about "time", "date", "month", "year", "day", "period", "over time", "trends":
      * FIRST: Look for date/time columns in metadata (columns with types: DATE, DATETIME, TIMESTAMP, or names containing: date, time, year, month, day, period, created, updated)
      * Use SQL date/time functions: YEAR(), MONTH(), DAY(), DATE(), DATEPART(), EXTRACT()
@@ -117,14 +125,26 @@ When the user question mentions time-related terms (month, year, day, date, peri
      * For "by month" (when user wants monthly aggregation across multiple months) → GROUP BY MONTH(date_column), YEAR(date_column) ORDER BY YEAR, MONTH
      * ALWAYS use the actual date/time column name from metadata
    
-   - Examples of proper date/time queries:
-     * "distribution over month" → **ALWAYS USE**: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table GROUP BY DATE(date_column) ORDER BY date"
-     * "trends over time" → "SELECT YEAR(date_column) as year, COUNT(*) as count FROM table GROUP BY YEAR(date_column) ORDER BY YEAR(date_column)" OR use DATE() for daily trends
-     * "by month" (monthly aggregation) → "SELECT MONTH(date_column) as month, YEAR(date_column) as year, COUNT(*) as count FROM table GROUP BY MONTH(date_column), YEAR(date_column) ORDER BY YEAR(date_column), MONTH(date_column)"
-     * "over period" → **ALWAYS USE**: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table GROUP BY DATE(date_column) ORDER BY date"
+   - **CRITICAL: ALWAYS FORMAT DATES PROPERLY FOR DISPLAY**:
+     * When selecting dates, use DATE_FORMAT() or equivalent to show readable dates:
+       - "SELECT DATE_FORMAT(date_column, '%Y-%m-%d') as date, ..." for dates
+       - "SELECT DATE_FORMAT(date_column, '%M %Y') as month_year, ..." for month/year
+       - "SELECT DATE_FORMAT(date_column, '%W, %M %d, %Y') as full_date, ..." for full dates
+     * When grouping by month number, ALSO include month name:
+       - "SELECT MONTH(date_column) as month_number, MONTHNAME(date_column) as month_name, YEAR(date_column) as year, COUNT(*) as count FROM table GROUP BY MONTH(date_column), YEAR(date_column) ORDER BY year, month_number"
+     * When grouping by year, format properly:
+       - "SELECT YEAR(date_column) as year, COUNT(*) as count FROM table GROUP BY YEAR(date_column) ORDER BY year"
+     * For MySQL: Use DATE_FORMAT(date_column, '%M') for month names, DATE_FORMAT(date_column, '%Y') for years
+     * Always include both the numeric value AND the formatted readable value when possible
+   
+   - Examples of proper date/time queries WITH FORMATTING:
+     * "distribution over month" → **ALWAYS USE**: "SELECT DATE(date_column) as date, DATE_FORMAT(date_column, '%M %d, %Y') as date_label, COUNT(*) as count FROM table GROUP BY DATE(date_column) ORDER BY date"
+     * "trends over time" → "SELECT YEAR(date_column) as year, CONCAT('Year ', YEAR(date_column)) as year_label, COUNT(*) as count FROM table GROUP BY YEAR(date_column) ORDER BY YEAR(date_column)"
+     * "by month" (monthly aggregation) → "SELECT MONTH(date_column) as month_number, MONTHNAME(date_column) as month_name, YEAR(date_column) as year, COUNT(*) as count FROM table GROUP BY MONTH(date_column), YEAR(date_column) ORDER BY YEAR(date_column), MONTH(date_column)"
+     * "over period" → **ALWAYS USE**: "SELECT DATE(date_column) as date, DATE_FORMAT(date_column, '%M %d, %Y') as date_label, COUNT(*) as count FROM table GROUP BY DATE(date_column) ORDER BY date"
    
    - IMPORTANT: If user asks about a metric (like "attendance") over time, use the metric column AND the date column:
-     * "attendance over month" → **ALWAYS USE**: "SELECT DATE(date_column) as date, AVG(attendance_column) as avg_attendance FROM table GROUP BY DATE(date_column) ORDER BY date"
+     * "attendance over month" → **ALWAYS USE**: "SELECT DATE(date_column) as date, DATE_FORMAT(date_column, '%M %d, %Y') as date_label, AVG(attendance_column) as avg_attendance FROM table GROUP BY DATE(date_column) ORDER BY date"
      * NOT: "SELECT YEAR(date_of_birth)..." when user asks about attendance
      * **REMEMBER**: "over month" means daily trends within a month, not monthly aggregation. Use DATE() not MONTH().
    
@@ -133,7 +153,34 @@ When the user question mentions time-related terms (month, year, day, date, peri
      * Metric columns: Used for calculations (attendance, score, amount, etc.)
      * When user asks "X over time", use: date column for grouping, X column for calculation
 
-4. **GENERATE ANY SQL QUERY AS NEEDED**:
+4. **INCLUDE PROPER NAMES AND DESCRIPTIVE LABELS (CRITICAL)**:
+   - **ALWAYS INCLUDE ENTITY NAMES WHEN IDs ARE PRESENT**:
+     * If your query selects an ID column (ends with _id or id), ALSO include the corresponding name column
+     * Look for name columns in the SAME table or related tables (e.g., student_id → student_name, category_id → category_name)
+     * If name column exists in same table: "SELECT student_id, student_name, ... FROM table"
+     * If name is in related table, use JOIN: "SELECT t1.student_id, t2.student_name, ... FROM table1 t1 JOIN students t2 ON t1.student_id = t2.id"
+     * **NEVER show only IDs** - always include names for better readability
+   
+   - **USE DESCRIPTIVE COLUMN ALIASES**:
+     * Instead of: "SELECT COUNT(*) as cnt FROM ..."
+     * Use: "SELECT COUNT(*) as total_count FROM ..." or "SELECT COUNT(*) as student_count FROM ..."
+     * Use clear, descriptive names: "avg_score" not "avg", "total_amount" not "sum", "month_name" not "mn"
+     * Column aliases should describe WHAT the data represents, not just the function used
+   
+   - **FORMAT NUMBERS AND VALUES PROPERLY**:
+     * For percentages: Use ROUND() and format: "SELECT ROUND(AVG(score) * 100, 2) as avg_score_percentage FROM ..."
+     * For currency: Format appropriately: "SELECT CONCAT('$', FORMAT(amount, 2)) as formatted_amount FROM ..."
+     * For counts: Use clear labels: "SELECT COUNT(*) as total_records FROM ..."
+   
+   - Examples of queries WITH PROPER NAMES:
+     * "show students by class" → "SELECT class_id, class_name, COUNT(*) as student_count FROM students GROUP BY class_id, class_name ORDER BY student_count DESC"
+     * "payments by mode" → "SELECT payment_mode_id, payment_mode_name, SUM(amount) as total_amount, COUNT(*) as payment_count FROM payments GROUP BY payment_mode_id, payment_mode_name"
+     * If name column doesn't exist, use the ID but format it: "SELECT CONCAT('Mode ', mode_id) as mode_label, COUNT(*) as count FROM payments GROUP BY mode_id"
+     * **CRITICAL**: "average time by student names" → "SELECT Student.name, AVG(QuizAttempt.timeTaken) as avg_time FROM QuizAttempt JOIN Student ON QuizAttempt.studentId = Student.id GROUP BY Student.name"
+       - Note: "by student names" means GROUP BY student names, NOT WHERE studentName = 'by student names'
+       - When dimension is a name/entity, JOIN with related table to get the name, then GROUP BY that name
+
+5. **GENERATE ANY SQL QUERY AS NEEDED**:
    - **Simple queries**: "SELECT column FROM table WHERE condition"
    - **Aggregates**: "SELECT AVG(column), SUM(column), COUNT(*) FROM table"
    - **Grouping**: "SELECT category, COUNT(*) FROM table GROUP BY category"
@@ -145,7 +192,7 @@ When the user question mentions time-related terms (month, year, day, date, peri
    - **JOIN queries**: When joining tables, use exact column matches (e.g., "JOIN table2 ON table1.id = table2.id") instead of LIKE patterns to avoid duplicate rows. If you must use LIKE, add DISTINCT or GROUP BY to prevent duplicates.
    - **Avoid duplicates**: If your query might return duplicate rows, add DISTINCT or use GROUP BY with appropriate aggregations
 
-5. **EXAMPLES OF ACCURATE QUERY GENERATION**:
+6. **EXAMPLES OF ACCURATE QUERY GENERATION**:
    
    **Category/Grouping Queries:**
    - User: "which state has the least student count"
@@ -187,7 +234,7 @@ When the user question mentions time-related terms (month, year, day, date, peri
      → Query: "SELECT YEAR(date_column) as year, COUNT(*) as count FROM table_name GROUP BY YEAR(date_column) ORDER BY YEAR(date_column)"
    
    - User: "by month" or "monthly distribution"
-     → Query: "SELECT MONTH(date_column) as month, COUNT(*) as count FROM table_name GROUP BY MONTH(date_column) ORDER BY MONTH(date_column)"
+     → Query: "SELECT MONTH(date_column) as month_number, MONTHNAME(date_column) as month_name, COUNT(*) as count FROM table_name GROUP BY MONTH(date_column) ORDER BY MONTH(date_column)"
    
    - User: "over period" (when date column exists)
      → Query: "SELECT DATE(date_column) as date, COUNT(*) as count FROM table_name GROUP BY DATE(date_column) ORDER BY DATE(date_column)"
@@ -213,9 +260,18 @@ When the user question mentions time-related terms (month, year, day, date, peri
      → Query: "SELECT YEAR(date_column) as year, COUNT(*) as admission_count FROM table_name GROUP BY YEAR(date_column) ORDER BY year"
    
    - User: "monthly attendance average" (when date column exists)
-     → Query: "SELECT YEAR(date_column) as year, MONTH(date_column) as month, AVG(attendance_percentage) as avg_attendance FROM table_name GROUP BY YEAR(date_column), MONTH(date_column) ORDER BY year, month"
+     → Query: "SELECT YEAR(date_column) as year, MONTH(date_column) as month_number, MONTHNAME(date_column) as month_name, AVG(attendance_percentage) as avg_attendance FROM table_name GROUP BY YEAR(date_column), MONTH(date_column) ORDER BY year, month_number"
+   
+   **Queries with Proper Names and Labels:**
+   - User: "payments by mode"
+     → Query: "SELECT payment_mode_id, payment_mode_name, SUM(amount) as total_amount, COUNT(*) as payment_count FROM payments GROUP BY payment_mode_id, payment_mode_name ORDER BY total_amount DESC"
+     → If payment_mode_name doesn't exist: "SELECT payment_mode_id, CONCAT('Mode ', payment_mode_id) as mode_label, SUM(amount) as total_amount, COUNT(*) as payment_count FROM payments GROUP BY payment_mode_id ORDER BY total_amount DESC"
+   
+   - User: "students by class"
+     → Query: "SELECT class_id, class_name, COUNT(*) as student_count FROM students GROUP BY class_id, class_name ORDER BY student_count DESC"
+     → If class_name doesn't exist, look for related table: "SELECT s.class_id, c.class_name, COUNT(*) as student_count FROM students s JOIN classes c ON s.class_id = c.id GROUP BY s.class_id, c.class_name ORDER BY student_count DESC"
 
-5. **IMPORTANT NOTES**:
+7. **IMPORTANT NOTES**:
    - Always use proper SQL syntax
    - Use aliases (AS) for better readability: "SELECT AVG(cgpa) AS avg_cgpa"
    - For "least", "lowest", "minimum" → Use ORDER BY ASC LIMIT 1
@@ -470,13 +526,17 @@ Generate only the JSON object, ensuring it is valid.
 }
 
 **CRITICAL REMINDERS**:
-- Generate 6-8 metrics total
-- Cover ALL visualization types: gauge, bar_chart, pie_chart, line_chart, scatter_plot, table
+- **MANDATORY**: Generate MINIMUM 8 metrics (8-10 total)
+- **MANDATORY**: Cover ALL visualization types: gauge, bar_chart, pie_chart, line_chart, scatter_plot, table
+- **MANDATORY**: NEVER show only IDs - always JOIN to get names/descriptions when IDs are present
+- **MANDATORY**: NEVER generate queries that return empty data - always ensure queries return results
 - Use ACTUAL column names from the metadata provided
 - Make questions RELEVANT to the data domain (infer from column names)
 - Each query should NATURALLY produce the right visualization type
 - Set visualization_type to "auto" for all metrics
 - Questions should be the MOST IMPORTANT for this specific dataset
+- When you see columns ending in "_id" or "Id", JOIN with related tables to get names
+- Example: "SELECT Quiz.name, AVG(QuizAttempt.score) FROM QuizAttempt JOIN Quiz ON QuizAttempt.quizId = Quiz.id GROUP BY Quiz.name" (shows names, not IDs)
 
 **CRITICAL INSTRUCTION FOR FILE-BASED SOURCE TYPES (CSV_FILE, EXCEL_FILE, JSON_FILE, TXT_FILE):**
 When source_type is CSV_FILE, EXCEL_FILE, JSON_FILE, or TXT_FILE:
@@ -544,6 +604,79 @@ function formatMetadata(metadata: DataSourceMetadata): string {
   return formatMetadataOptimal(metadata);
 }
 
+/**
+ * Truncates text to fit within token limit
+ * Tries to preserve important parts (metadata, user question) while truncating verbose instructions
+ */
+function truncateTextToTokenLimit(text: string, maxTokens: number, model: string): string {
+  const { estimateTokenCount } = require('../utils/token-counter');
+  
+  let currentTokens = estimateTokenCount(text, model);
+  if (currentTokens <= maxTokens) {
+    return text;
+  }
+  
+  // Extract key sections
+  const metadataMatch = text.match(/\*\*DATA SOURCE METADATA:\*\*\s*([\s\S]*?)(?=\*\*USER QUESTION|\*\*REQUIRED OUTPUT|$)/i);
+  const userQuestionMatch = text.match(/\*\*USER QUESTION[^:]*:\*\*\s*([\s\S]*?)(?=\*\*REQUIRED OUTPUT|$)/i);
+  
+  const metadataSection = metadataMatch ? metadataMatch[0] : '';
+  const userQuestionSection = userQuestionMatch ? userQuestionMatch[0] : '';
+  
+  // Try to build minimal prompt with just essential parts
+  // Keep: metadata + user question + output format
+  const outputFormatMatch = text.match(/\*\*REQUIRED OUTPUT FORMAT[^:]*:\*\*\s*([\s\S]*?)(?=\*\*CRITICAL|$)/i);
+  const outputFormatSection = outputFormatMatch ? outputFormatMatch[0] : '';
+  
+  // Build minimal version
+  const essentialParts = [
+    '1. ⚙️ System Role and Constraints\n\nYou are an expert SQL query generator. Generate accurate SQL queries using ONLY the table and column names from the metadata below.',
+    metadataSection,
+    userQuestionSection,
+    outputFormatSection || '**REQUIRED OUTPUT FORMAT (JSON ONLY):**\n\nGenerate only the JSON object with query_type, query_content, visualization_type, and insight_summary.'
+  ].filter(Boolean).join('\n\n');
+  
+  const essentialTokens = estimateTokenCount(essentialParts, model);
+  
+  if (essentialTokens <= maxTokens) {
+    return essentialParts;
+  }
+  
+  // If still too large, truncate metadata itself
+  if (metadataMatch) {
+    const metadataContent = metadataMatch[1];
+    const maxMetadataTokens = maxTokens - estimateTokenCount(userQuestionSection + outputFormatSection, model) - 500;
+    
+    if (maxMetadataTokens > 0) {
+      // Truncate metadata by removing tables/columns
+      const lines = metadataContent.split('\n');
+      const truncatedLines: string[] = [];
+      let tokenCount = 0;
+      
+      for (const line of lines) {
+        const lineTokens = estimateTokenCount(line, model);
+        if (tokenCount + lineTokens <= maxMetadataTokens) {
+          truncatedLines.push(line);
+          tokenCount += lineTokens;
+        } else {
+          break;
+        }
+      }
+      
+      const truncatedMetadata = `**DATA SOURCE METADATA:**\n\n${truncatedLines.join('\n')}\n\n... (metadata truncated - using top ${truncatedLines.length} lines to fit token limit)`;
+      return [
+        '1. ⚙️ System Role and Constraints\n\nYou are an expert SQL query generator. Generate accurate SQL queries using ONLY the table and column names from the metadata below.',
+        truncatedMetadata,
+        userQuestionSection,
+        outputFormatSection || '**REQUIRED OUTPUT FORMAT (JSON ONLY):**\n\nGenerate only the JSON object.'
+      ].filter(Boolean).join('\n\n');
+    }
+  }
+  
+  // Last resort: return minimal version
+  return `Generate a SQL query for: ${userQuestionSection}\n\nUse metadata tables and columns provided. Return JSON with query_type, query_content, visualization_type, and insight_summary.`;
+}
+
 export async function generateAdhocQuery(
   userQuestion: string,
   metadata: DataSourceMetadata,
@@ -554,6 +687,12 @@ export async function generateAdhocQuery(
     entities: string[];
     queryType: string;
     semanticSummary: string;
+    groupByPattern?: {
+      detected: boolean;
+      dimension: string;
+      requiresJoin: boolean;
+      joinEntity?: string;
+    };
   } | null
 ): Promise<AdhocQueryResponse> {
   // Dynamic import to avoid circular dependencies
@@ -767,6 +906,54 @@ export async function generateAdhocQuery(
           });
         });
       }
+      
+      // CRITICAL: If GROUP BY pattern detected and requires JOIN, find the related table
+      if (questionUnderstanding.groupByPattern?.detected && questionUnderstanding.groupByPattern.requiresJoin && questionUnderstanding.groupByPattern.joinEntity) {
+        const joinEntity = questionUnderstanding.groupByPattern.joinEntity;
+        console.log(`[LLM-SERVICE] 🔗 GROUP BY requires JOIN with "${joinEntity}" table - searching for related table...`);
+        
+        // Find table that matches the join entity (e.g., "student" → "Student" or "students")
+        const joinTableMatch = reducedMetadata.tables.find(table => {
+          const tableNameLower = table.name.toLowerCase();
+          return tableNameLower === joinEntity || 
+                 tableNameLower === joinEntity + 's' ||
+                 (joinEntity.endsWith('s') && tableNameLower === joinEntity.slice(0, -1)) ||
+                 tableNameLower.includes(joinEntity);
+        });
+        
+        if (joinTableMatch) {
+          console.log(`[LLM-SERVICE] ✅ Found JOIN table: "${joinTableMatch.name}" for entity "${joinEntity}"`);
+          
+          // Find name column in the join table
+          const nameColumns = joinTableMatch.columns.filter(col => {
+            const colNameLower = col.name.toLowerCase();
+            return colNameLower.includes('name') || 
+                   colNameLower === 'name' ||
+                   (joinEntity && colNameLower.includes(joinEntity) && colNameLower.includes('name'));
+          });
+          
+          if (nameColumns.length > 0) {
+            const nameColumn = nameColumns[0];
+            console.log(`[LLM-SERVICE] ✅ Found name column in ${joinTableMatch.name}: "${nameColumn.name}"`);
+            detectedColumns.push({
+              table: joinTableMatch.name,
+              column: nameColumn.name,
+            });
+          } else {
+            // Fallback: use first column or id column
+            const idColumn = joinTableMatch.columns.find(col => col.name.toLowerCase().includes('id')) || joinTableMatch.columns[0];
+            if (idColumn) {
+              console.log(`[LLM-SERVICE] ⚠️ No name column found, using: "${idColumn.name}"`);
+              detectedColumns.push({
+                table: joinTableMatch.name,
+                column: idColumn.name,
+              });
+            }
+          }
+        } else {
+          console.log(`[LLM-SERVICE] ⚠️ Could not find JOIN table for entity "${joinEntity}" - LLM will need to infer it`);
+        }
+      }
     } else {
       // Fallback: use first table
       topRelevantTable = reducedMetadata.tables[0]?.name || null;
@@ -832,19 +1019,44 @@ export async function generateAdhocQuery(
   // CRITICAL: Build query using detected columns from semantic search
   // This is more reliable than relying on LLM prompts
   let detectedQueryInfo = '';
+  let groupByInstructions = '';
+  
+  // CRITICAL: Add GROUP BY instructions if pattern detected
+  if (questionUnderstanding?.groupByPattern?.detected) {
+    const dimension = questionUnderstanding.groupByPattern.dimension;
+    const requiresJoin = questionUnderstanding.groupByPattern.requiresJoin;
+    const joinEntity = questionUnderstanding.groupByPattern.joinEntity;
+    
+    groupByInstructions = `\n\n**🎯 CRITICAL GROUP BY PATTERN DETECTED**:
+- The question asks for aggregation "${dimension}" - this REQUIRES GROUP BY, NOT WHERE clause
+- Dimension: "${dimension}"
+- Requires JOIN: ${requiresJoin ? 'YES' : 'NO'}${requiresJoin && joinEntity ? ` (JOIN with ${joinEntity} table)` : ''}
+
+**MANDATORY GROUP BY RULES**:
+1. You MUST use GROUP BY clause, NOT WHERE clause for "${dimension}"
+2. ${requiresJoin ? `You MUST JOIN with the ${joinEntity} table to get the name column, then GROUP BY that name` : `GROUP BY the "${dimension}" column directly`}
+3. Example: "average time by student names" → SELECT Student.name, AVG(timeTaken) FROM QuizAttempt JOIN Student ON QuizAttempt.studentId = Student.id GROUP BY Student.name
+4. ❌ WRONG: SELECT AVG(timeTaken) FROM QuizAttempt WHERE studentName = 'by student names' (THIS IS COMPLETELY WRONG!)
+5. ✅ CORRECT: SELECT dimension_column, AGGREGATE(metric_column) FROM table GROUP BY dimension_column
+6. If dimension is entity names (like "student names"), JOIN with the entity table first, then GROUP BY the name column`;
+  }
+  
   if (topRelevantTable && detectedColumns.length > 0) {
-    const detectedColumnNames = detectedColumns.map(c => c.column).join(', ');
+    const detectedColumnNames = detectedColumns.map(c => `${c.table}.${c.column}`).join(', ');
+    const uniqueTables = Array.from(new Set(detectedColumns.map(c => c.table)));
     detectedQueryInfo = `\n\n**SEMANTIC SEARCH RESULTS (USE THESE EXACT COLUMNS FROM SYSTEM CATALOG)**:
-- Detected Table: "${topRelevantTable}" (found via semantic search from system catalog)
+- Detected Table(s): ${uniqueTables.map(t => `"${t}"`).join(', ')} (found via semantic search from system catalog)
 - Detected Columns: ${detectedColumnNames} (found via semantic search from system catalog)
 - Extracted Values: ${extractedValues.length > 0 ? extractedValues.map(v => `'${v}'`).join(', ') : 'none'}
 
 **CRITICAL INSTRUCTIONS**:
-1. Use table "${topRelevantTable}" - this was detected via semantic search from system catalog
+1. Use table(s) ${uniqueTables.map(t => `"${t}"`).join(', ')} - these were detected via semantic search from system catalog
 2. Use columns: ${detectedColumnNames} - these were detected via semantic search from system catalog
-3. If extracted values exist, use them in WHERE clause: ${extractedValues.length > 0 ? `WHERE ${detectedColumns[0]?.column || 'column'} = '${extractedValues[0]}'` : 'no WHERE clause needed'}
+3. ${extractedValues.length > 0 ? `If extracted values exist, use them in WHERE clause: WHERE ${detectedColumns[0]?.column || 'column'} = '${extractedValues[0]}'` : 'No WHERE clause needed for values'}
 4. Do NOT use columns that were NOT detected - stick to the detected columns above
-5. Preserve complete values: ${extractedValues.length > 0 ? `Use '${extractedValues[0]}' as single value, do NOT split` : 'no values to preserve'}`;
+5. Preserve complete values: ${extractedValues.length > 0 ? `Use '${extractedValues[0]}' as single value, do NOT split` : 'no values to preserve'}${groupByInstructions}`;
+  } else if (groupByInstructions) {
+    detectedQueryInfo = groupByInstructions;
   }
   
   // Enhance prompt with semantic understanding and detected columns
@@ -854,7 +1066,7 @@ export async function generateAdhocQuery(
     : '';
   
   const semanticContext = questionUnderstanding
-    ? `\n\nSemantic Understanding:\n- Intent: ${questionUnderstanding.intent}\n- Query Type: ${questionUnderstanding.queryType}\n- Key Concepts: ${questionUnderstanding.keyConcepts.join(', ')}\n- Entities: ${questionUnderstanding.entities.join(', ')}\n- Semantic Summary: ${questionUnderstanding.semanticSummary}`
+    ? `\n\nSemantic Understanding:\n- Intent: ${questionUnderstanding.intent}\n- Query Type: ${questionUnderstanding.queryType}\n- Key Concepts: ${questionUnderstanding.keyConcepts.join(', ')}\n- Entities: ${questionUnderstanding.entities.join(', ')}\n- Semantic Summary: ${questionUnderstanding.semanticSummary}${questionUnderstanding.groupByPattern?.detected ? `\n- 🎯 GROUP BY DETECTED: dimension="${questionUnderstanding.groupByPattern.dimension}", requiresJoin=${questionUnderstanding.groupByPattern.requiresJoin}${questionUnderstanding.groupByPattern.joinEntity ? `, joinEntity="${questionUnderstanding.groupByPattern.joinEntity}"` : ''}` : ''}`
     : '';
   
   // CRITICAL: Add value preservation instructions
@@ -873,19 +1085,65 @@ export async function generateAdhocQuery(
     .replace('{DATA_SOURCE_METADATA}', formatMetadata(reducedMetadata))
     .replace('{USER_QUESTION}', `${userQuestion}${semanticContext}${detectedQueryInfo}${tableEmphasis}${valuePreservationInstructions}\n\n**CRITICAL COLUMN NAME RULES**:\n1. Use ONLY these exact column names: ${columnNamesList}${allColumnNames.length > 100 ? ' (and more - see metadata above)' : ''}\n2. Do NOT invent column names. If you need a concept but see a different column name in the list above, use that exact column name.\n3. Check the metadata tables above for the EXACT column name before using it.\n4. If the user asks for something that doesn't exist, use the closest matching column from the list above OR use COUNT(*) for counting.`);
 
+  // CRITICAL: Check total token count before sending to LLM
+  const systemMessage = 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. **CRITICAL RULES - READ CAREFULLY:**\n\n1) **TABLE SELECTION IS CRITICAL**: If the prompt mentions "MOST RELEVANT table", you MUST use that exact table name. Do NOT use other tables. Use the exact table name from metadata, not variations or similar names.\n\n2) **"BY X" MEANS GROUP BY X - CRITICAL PATTERN RECOGNITION**: When user asks for aggregations (AVG, COUNT, SUM, MAX, MIN) "by X" or "grouped by X", this ALWAYS means GROUP BY X, NOT WHERE X = value.\n   - ✅ CORRECT: "average time by student names" → SELECT Student.name, AVG(timeTaken) FROM QuizAttempt JOIN Student ON QuizAttempt.studentId = Student.id GROUP BY Student.name\n   - ❌ WRONG: "average time by student names" → SELECT AVG(timeTaken) FROM QuizAttempt WHERE studentName = \'by student names\' (THIS IS COMPLETELY WRONG!)\n   - ✅ CORRECT: "count by category" → SELECT category, COUNT(*) FROM table GROUP BY category\n   - ❌ WRONG: "count by category" → SELECT COUNT(*) FROM table WHERE category = \'by category\' (THIS IS WRONG!)\n   - **PATTERN**: "metric by dimension" = GROUP BY dimension + JOIN if dimension is in another table\n   - **IF dimension is a name/entity**: JOIN with the related table to get the name, then GROUP BY that name\n   - **NEVER** treat "by X" as a WHERE clause filter value - it\'s ALWAYS a GROUP BY requirement\n\n3) **VALUE PRESERVATION IS CRITICAL**: If the user question contains multi-word values, preserve them as SINGLE, COMPLETE values in WHERE clauses.\n   - CORRECT: WHERE columnName = \'Multi Word Value\' ✅\n   - WRONG: WHERE columnName = \'Multi\' AND otherColumn = \'Word Value\' ❌\n   - WRONG: WHERE columnName = \'Multi\' ❌ (missing part of value)\n   - If the prompt mentions "Extracted Values", use those EXACT values as single string literals\n   - NEVER split multi-word values into multiple conditions\n   - NEVER truncate values - use the complete value from the user question\n\n4) **NEVER INVENT COLUMN NAMES - THIS IS THE MOST CRITICAL RULE**: You MUST ONLY use column names that are EXPLICITLY listed in the metadata provided. If a column does not exist in the metadata, DO NOT use it. The query will FAIL if you use a non-existent column.\n   - ❌ WRONG: Using column names that don\'t exist in metadata\n   - ✅ CORRECT: Check metadata first, find the exact column name, use that exact name\n   - If user asks about a concept but the table has no matching column, you MUST find what columns DO exist and use those instead\n   - NEVER guess or invent column names based on the question - ALWAYS check metadata first\n   - **IF user asks for "student names" but table only has "studentId"**: JOIN with Student table to get names\n\n5) **COLUMN NAME MATCHING - VERIFY EXISTS**: When the user asks about something:\n   - FIRST: Search the metadata tables for columns that match the concept\n   - Look for EXACT matches first, then similar names\n   - If NO column matches the concept, use the closest column that DOES exist\n   - If you cannot find ANY matching column, use COUNT(*) or a column that exists\n\n6) **VERIFY BEFORE USING - MANDATORY STEP**: Before using ANY column name in your query:\n   - Search the metadata tables for that EXACT column name\n   - Verify it exists in the table you\'re querying\n   - If not found, search for similar names\n   - Use the EXACT column name from metadata, not a variation you invent\n   - If no match exists, DO NOT use that column - find an alternative that DOES exist\n\n7) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR() - this ensures charts show multiple data points.\n\n8) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function.\n\n9) For "differences", "compare", "versus", "vs", "measure differences" questions: Group by ALL dimensions mentioned to enable comparison.\n\n10) **AVOID DUPLICATE ROWS**: When using JOINs, prefer exact matches (e.g., "ON table1.id = table2.id") over LIKE patterns. If you must use LIKE or the query might return duplicates, add DISTINCT or use GROUP BY with aggregations to eliminate duplicates.\n\n**REMEMBER**: The metadata contains the EXACT table and column names. Use them EXACTLY as shown. Never invent or guess names. Preserve complete values from user questions. "BY X" means GROUP BY X, not WHERE X = value. Always return valid JSON only.';
+  
+  const { estimateTokenCount, getContextLimit } = await import('../utils/token-counter');
+  const systemTokens = estimateTokenCount(systemMessage, model);
+  const promptTokens = estimateTokenCount(prompt, model);
+  const totalTokens = systemTokens + promptTokens;
+  const contextLimit = getContextLimit(model);
+  const maxTokens = contextLimit - 2000; // Reserve 2000 tokens for response
+  
+  console.log(`[LLM-SERVICE] 📊 Final token check: System=${systemTokens}, Prompt=${promptTokens}, Total=${totalTokens}, Limit=${maxTokens}`);
+  
+  if (totalTokens > maxTokens) {
+    const excessTokens = totalTokens - maxTokens;
+    console.warn(`[LLM-SERVICE] ⚠️ Total tokens (${totalTokens}) exceed limit (${maxTokens}) by ${excessTokens} tokens. Applying aggressive truncation...`);
+    
+    // Truncate prompt to fit within limits
+    const maxPromptTokens = maxTokens - systemTokens - 500; // Reserve extra buffer
+    const truncatedPrompt = truncateTextToTokenLimit(prompt, maxPromptTokens, model);
+    
+    console.log(`[LLM-SERVICE] ✅ Truncated prompt from ${promptTokens} to ${estimateTokenCount(truncatedPrompt, model)} tokens`);
+    
+    const response = await openai.chat.completions.create({
+      model: model,
+      messages: [
+        {
+          role: 'system',
+          content: systemMessage,
+        },
+        {
+          role: 'user',
+          content: truncatedPrompt,
+        },
+      ],
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+    });
+    
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No response from LLM');
+    }
+    
+    return JSON.parse(content) as AdhocQueryResponse;
+  }
+
   const response = await openai.chat.completions.create({
-    model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
+    model: model,
     messages: [
       {
         role: 'system',
-        content: 'You are an expert SQL query generator. Generate accurate SQL queries that exactly match user questions. **CRITICAL RULES - READ CAREFULLY:**\n\n1) **TABLE SELECTION IS CRITICAL**: If the prompt mentions "MOST RELEVANT table", you MUST use that exact table name. Do NOT use other tables. Use the exact table name from metadata, not variations or similar names.\n\n2) **VALUE PRESERVATION IS CRITICAL**: If the user question contains multi-word values, preserve them as SINGLE, COMPLETE values in WHERE clauses.\n   - CORRECT: WHERE columnName = \'Multi Word Value\' ✅\n   - WRONG: WHERE columnName = \'Multi\' AND otherColumn = \'Word Value\' ❌\n   - WRONG: WHERE columnName = \'Multi\' ❌ (missing part of value)\n   - If the prompt mentions "Extracted Values", use those EXACT values as single string literals\n   - NEVER split multi-word values into multiple conditions\n   - NEVER truncate values - use the complete value from the user question\n\n3) **NEVER INVENT COLUMN NAMES - THIS IS THE MOST CRITICAL RULE**: You MUST ONLY use column names that are EXPLICITLY listed in the metadata provided. If a column does not exist in the metadata, DO NOT use it. The query will FAIL if you use a non-existent column.\n   - ❌ WRONG: Using column names that don\'t exist in metadata\n   - ✅ CORRECT: Check metadata first, find the exact column name, use that exact name\n   - If user asks about a concept but the table has no matching column, you MUST find what columns DO exist and use those instead\n   - NEVER guess or invent column names based on the question - ALWAYS check metadata first\n\n4) **COLUMN NAME MATCHING - VERIFY EXISTS**: When the user asks about something:\n   - FIRST: Search the metadata tables for columns that match the concept\n   - Look for EXACT matches first, then similar names\n   - If NO column matches the concept, use the closest column that DOES exist\n   - If you cannot find ANY matching column, use COUNT(*) or a column that exists\n\n5) **VERIFY BEFORE USING - MANDATORY STEP**: Before using ANY column name in your query:\n   - Search the metadata tables for that EXACT column name\n   - Verify it exists in the table you\'re querying\n   - If not found, search for similar names\n   - Use the EXACT column name from metadata, not a variation you invent\n   - If no match exists, DO NOT use that column - find an alternative that DOES exist\n\n6) For queries asking "over month" or "over period", ALWAYS use DATE(date_column) for grouping, NEVER use MONTH() or YEAR() - this ensures charts show multiple data points.\n\n7) MySQL ONLY_FULL_GROUP_BY mode: ALL non-aggregated columns in SELECT must be in GROUP BY clause. If you need a column that cannot be grouped, wrap it in MIN() or MAX() aggregate function.\n\n8) For "differences", "compare", "versus", "vs", "measure differences" questions: Group by ALL dimensions mentioned to enable comparison.\n\n9) **AVOID DUPLICATE ROWS**: When using JOINs, prefer exact matches (e.g., "ON table1.id = table2.id") over LIKE patterns. If you must use LIKE or the query might return duplicates, add DISTINCT or use GROUP BY with aggregations to eliminate duplicates.\n\n**REMEMBER**: The metadata contains the EXACT table and column names. Use them EXACTLY as shown. Never invent or guess names. Preserve complete values from user questions. Always return valid JSON only.',
+        content: systemMessage,
       },
       {
         role: 'user',
         content: prompt,
       },
     ],
-    temperature: 0.2, // Slightly higher for more creative/accurate query generation
+    temperature: 0.2,
     response_format: { type: 'json_object' },
   });
 
@@ -1045,7 +1303,14 @@ export async function generateDashboardMetrics(
   // Analyze schema GENERICALLY (no domain assumptions)
   const schemaAnalysis = analyzeSchemaGenerically(reducedMetadata);
   
-  const prompt = `You are an intelligent analytics engine. Your task is to analyze the schema provided below, detect the domain/business context, and generate 8-10 sophisticated dashboard metrics that focus on what's IMPORTANT for that domain.
+  const prompt = `You are an intelligent analytics engine. Your task is to analyze the schema provided below, detect the domain/business context, and generate MINIMUM 8 (8-10 total) sophisticated dashboard metrics that focus on what's IMPORTANT for that domain.
+
+**CRITICAL REQUIREMENTS - READ CAREFULLY:**
+1. **MINIMUM 8 METRICS REQUIRED** - Generate at least 8 metrics, up to 10 total
+2. **ALL VISUALIZATION TYPES MUST BE COVERED**: gauge, bar_chart, pie_chart, line_chart, scatter_plot, table
+3. **NEVER SHOW ONLY IDs** - Always JOIN with related tables to get names/descriptions when IDs are present
+4. **NEVER GENERATE EMPTY QUERIES** - All queries must return data (use COUNT(*), WHERE IS NOT NULL, LIMIT)
+5. **ALWAYS INCLUDE PROPER DETAILS** - Users need descriptive names, not just numeric IDs
 
 **STEP 1: DOMAIN DETECTION FROM SCHEMA**
 Before generating metrics, you MUST:
@@ -1067,13 +1332,20 @@ Before generating metrics, you MUST:
   → Important metrics: Patient counts, staff metrics, appointments, billing, treatment patterns
   → AVOID: Unnecessary operational details
 
-**IMPORTANT**: The tables provided below have been INTELLIGENTLY SELECTED as the BEST tables for analytics based on:
-- Rich numeric columns (for aggregations and KPIs)
-- Date/time columns (for trends and time series)
-- Category columns (for distributions and comparisons)
-- Column diversity (multiple data types for comprehensive analysis)
+**IMPORTANT**: The tables provided below have been INTELLIGENTLY SELECTED by AI as the BEST tables for analytics based on domain understanding and analytical value.
 
 **PRIORITIZE THESE TABLES**: Focus your metrics on these selected tables - they offer the most analytical value.
+
+**CRITICAL ANALYTICAL FOCUS AREAS**:
+When generating metrics, ALWAYS prioritize and focus on:
+1. **NUMERIC THINGS**: Metrics involving numeric columns (scores, amounts, counts, totals, percentages, quantities, metrics, KPIs)
+2. **TIME THINGS**: Metrics involving time/date columns (trends over time, time-based patterns, temporal analysis)
+3. **CATEGORY THINGS**: Metrics involving categories (distributions by category, comparisons across categories, category breakdowns)
+4. **STATE THINGS**: Metrics involving states/status (state distributions, status analysis, phase/stage analysis)
+5. **TOTAL COUNTS THINGS**: Metrics showing total counts, aggregations, summaries
+6. **DISTRIBUTION TYPE THINGS**: Metrics suitable for distribution analysis (pie charts, bar charts by category, breakdowns)
+
+**AI DECIDES**: The AI has already analyzed the domain and selected the best tables. Now generate metrics that leverage these tables' strengths in the areas above.
 
 **DATASET STRUCTURE:**
 
@@ -1085,13 +1357,40 @@ ${schemaAnalysis.dataTypesSummary}
 
 **CRITICAL REQUIREMENTS:**
 
-1. **DOMAIN-AWARE METRIC GENERATION**:
+1. **NEVER GENERATE QUERIES THAT RETURN EMPTY DATA - CRITICAL RULE**:
+   - **MANDATORY**: Generate queries that are GUARANTEED to return data
+   - **ALWAYS** use COUNT(*) queries when possible - they always return at least one row
+   - **AVOID** complex WHERE clauses that might filter out all data
+   - **AVOID** queries on empty tables or columns with all NULL values
+   - **PREFER** simple aggregations (COUNT, SUM, AVG) over complex joins
+   - **USE** GROUP BY only when you're confident the grouped column has data
+   - **TEST** your query logic mentally: "Will this query return at least one row?"
+   - If unsure, use simpler queries that are guaranteed to work:
+     * "SELECT COUNT(*) as total FROM table" (always works)
+     * "SELECT column, COUNT(*) as count FROM table GROUP BY column LIMIT 10" (works if column has values)
+     * "SELECT AVG(numeric_column) as avg_value FROM table WHERE numeric_column IS NOT NULL" (works if column has non-null values)
+   - **NEVER** generate queries that might return 0 rows - always ensure data exists
+
+2. **NEVER SHOW ONLY IDs - ALWAYS INCLUDE PROPER NAMES/DETAILS - CRITICAL RULE**:
+   - **MANDATORY**: If a table has an ID column, you MUST also include the corresponding name/description column
+   - **ALWAYS JOIN** with related tables to get names when IDs are present
+   - **EXAMPLE**: If querying "QuizAttempt" table with "quizId", JOIN with "Quiz" table to get "quizName" or "quizTitle"
+   - **CORRECT**: "SELECT Quiz.name, AVG(QuizAttempt.score) FROM QuizAttempt JOIN Quiz ON QuizAttempt.quizId = Quiz.id GROUP BY Quiz.name"
+   - **WRONG**: "SELECT quizId, AVG(score) FROM QuizAttempt GROUP BY quizId" (shows only IDs - users can't understand what quizId=8 means!)
+   - **PATTERN**: When you see columns ending in "_id" or "Id", look for related tables with name columns
+   - **JOIN PATTERN**: "SELECT RelatedTable.name, MainTable.metric FROM MainTable JOIN RelatedTable ON MainTable.foreignKeyId = RelatedTable.id"
+   - **IF name column exists in same table**: Use it directly - "SELECT name, metric FROM table"
+   - **IF only ID exists**: JOIN with related table to get name - "SELECT t2.name, t1.metric FROM table1 t1 JOIN table2 t2 ON t1.id = t2.id"
+   - **NEVER** show results with just numeric IDs - users need descriptive names to understand the data
+
+2. **DOMAIN-AWARE METRIC GENERATION**:
    - **FIRST**: Analyze the schema below to detect the domain/business context
-   - **THEN**: Generate metrics that are IMPORTANT for that domain
+   - **THEN**: Generate metrics that are IMPORTANT for that domain AND will return data
    - Focus on business-critical insights (e.g., for education: students, performance, fees, attendance)
    - AVOID unnecessary operational metrics (e.g., buses, time duration) unless they're core to the business
    - Use ONLY the actual column names from metadata - do NOT invent column names
    - Detect what's important from the schema structure itself (table names, column names, relationships)
+   - **PRIORITIZE** queries that use the most populated tables/columns
 
 2. **NEVER INVENT COLUMN NAMES - CRITICAL RULE**:
    - **MANDATORY**: Before using ANY column in a query, verify it EXISTS in the metadata tables below
@@ -1108,23 +1407,45 @@ ${schemaAnalysis.dataTypesSummary}
    - Adapt your queries to work with whatever columns actually exist
    - Don't force domain-specific concepts onto generic data
 
-4. **INTELLIGENT METRIC SELECTION** (8-10 total):
+4. **INTELLIGENT METRIC SELECTION** (MINIMUM 8 METRICS REQUIRED):
 
-   After detecting the domain from schema, generate metrics that are IMPORTANT for that domain:
+   **CRITICAL**: You MUST generate AT LEAST 8 metrics. Generate 8-10 metrics total.
    
-   - 2-3 Key Performance Indicators (gauge charts) - Focus on the MOST IMPORTANT KPIs for the detected domain
-   - 2-3 Ranking/Comparison analyses (bar charts) - Show top performers, comparisons, rankings relevant to the domain
-   - 1-2 Distribution/Breakdown analyses (pie/bar charts) - Show distributions of important categories
-   - 1-2 Trend/Time analyses (line charts - only if date columns exist) - Show trends over time for important metrics
+   **MANDATORY VISUALIZATION TYPE COVERAGE** - You MUST include ALL of these types:
+   1. **GAUGE** (1-2 metrics) - Key Performance Indicators, single important metrics
+   2. **BAR CHART** (2-3 metrics) - Rankings, comparisons, top performers
+   3. **PIE CHART** (1-2 metrics) - Distributions, breakdowns by category/status
+   4. **LINE CHART** (1-2 metrics) - Time trends (only if date columns exist)
+   5. **SCATTER PLOT** (1 metric) - Correlations (only if ≥2 numeric columns exist)
+   6. **TABLE** (1 metric) - Detailed lists with proper names/details
+   
+   After detecting the domain from schema, generate metrics that are IMPORTANT for that domain, focusing on:
+   
+   **ALWAYS PRIORITIZE THESE ANALYTICAL PATTERNS:**
+   - **NUMERIC THINGS**: 2-3 Key Performance Indicators (gauge charts) - Focus on numeric metrics, totals, averages, counts
+   - **TIME THINGS**: 1-2 Trend/Time analyses (line charts - only if date columns exist) - Show trends over time, temporal patterns
+   - **CATEGORY THINGS**: 1-2 Distribution/Breakdown analyses (pie/bar charts) - Show distributions by category, category comparisons
+   - **STATE THINGS**: 1-2 State/Status analyses (bar/pie charts) - Show state distributions, status breakdowns
+   - **TOTAL COUNTS THINGS**: 1-2 Count/Aggregation metrics (gauge/bar charts) - Show total counts, aggregations, summaries
+   - **DISTRIBUTION TYPE THINGS**: 1-2 Distribution analyses (pie/bar charts) - Show breakdowns, distributions, segmentations
+   - 1-2 Ranking/Comparison analyses (bar charts) - Show top performers, comparisons, rankings
    - 1 Correlation analysis (scatter plot - only if ≥2 numeric columns) - If relevant to the domain
    - 1 Detailed list (table) - Show detailed view of important entities
 
-   **CRITICAL**: Choose metrics that answer IMPORTANT questions for the detected domain. For example:
-   - Education: "Total Students", "Top Performers", "Fees Collection Status", "Attendance Trends", "Staff Distribution"
-   - Real Estate: "Total Revenue", "Top Customers", "Sales Trends", "Property Type Distribution", "Commission Analysis"
-   - Medical: "Total Patients", "Appointment Trends", "Staff Distribution", "Billing Status", "Treatment Patterns"
+   **CRITICAL**: Choose metrics that answer IMPORTANT questions for the detected domain, ALWAYS focusing on:
+   - Numeric metrics (scores, amounts, totals, averages)
+   - Time-based patterns (trends, changes over time)
+   - Category distributions (breakdowns by category, type, class)
+   - State/status analysis (distributions by state, status, phase)
+   - Total counts and aggregations
+   - Distribution patterns
+
+   **EXAMPLES** (adapt to actual domain):
+   - Education: "Total Students" (numeric), "Attendance Trends Over Time" (time), "Performance by Category" (category), "Status Distribution" (state), "Total Counts by Class" (counts), "Grade Distribution" (distribution)
+   - Real Estate: "Total Revenue" (numeric), "Sales Trends" (time), "Property Type Distribution" (category), "Status Breakdown" (state), "Total Counts" (counts), "Price Distribution" (distribution)
+   - Medical: "Total Patients" (numeric), "Appointment Trends" (time), "Department Distribution" (category), "Treatment Status" (state), "Total Counts" (counts), "Diagnosis Distribution" (distribution)
    
-   **AVOID**: Metrics about unnecessary operational details (buses, time duration, etc.) unless they're explicitly important in the schema
+   **AVOID**: Metrics about unnecessary operational details unless they're explicitly important in the schema
 
 **METRIC QUALITY PRINCIPLES:**
 
@@ -1136,27 +1457,32 @@ ${schemaAnalysis.dataTypesSummary}
 
 4. **NATURAL VISUALIZATION**: Each metric should lead naturally to its chart type
 
-**GENERIC METRIC TEMPLATES (ADAPT TO ACTUAL COLUMNS):**
+**GENERIC METRIC TEMPLATES (ADAPT TO ACTUAL COLUMNS - ALL GUARANTEED TO RETURN DATA):**
 
 1. **GAUGE (Performance KPI)**:
 
-   Query: "SELECT AVG([numeric_column]) as avg_value FROM [table]"
+   Query: "SELECT COUNT(*) as total_count FROM [table]" OR "SELECT AVG([numeric_column]) as avg_value FROM [table] WHERE [numeric_column] IS NOT NULL"
+   → **ALWAYS** use COUNT(*) first (guaranteed to return data), or add WHERE IS NOT NULL for AVG
 
-   Name: "Average [metric_column] Performance"
+   Name: "Total Records" OR "Average [metric_column]"
 
-   Insight: "Overall average [metric] across all records: [value]"
+   Insight: "Total number of records" OR "Overall average [metric] across all records"
 
 2. **BAR CHART (Ranking)**:
 
-   Query: "SELECT [category_column], AVG([value_column]) as avg_value FROM [table] GROUP BY [category_column] ORDER BY avg_value DESC LIMIT 10"
+   Query: "SELECT [category_column], COUNT(*) as count FROM [table] WHERE [category_column] IS NOT NULL GROUP BY [category_column] ORDER BY count DESC LIMIT 10"
+   → **ALWAYS** add WHERE IS NOT NULL and LIMIT to ensure data exists
+   → **CRITICAL**: If category_column is an ID, JOIN to get name: "SELECT RelatedTable.name, COUNT(*) as count FROM MainTable JOIN RelatedTable ON MainTable.categoryId = RelatedTable.id WHERE RelatedTable.name IS NOT NULL GROUP BY RelatedTable.name ORDER BY count DESC LIMIT 10"
+   → **NEVER** show only IDs - always include names
 
-   Name: "Top 10 [categories] by Average [metric]"
+   Name: "Top 10 [categories] by Count"
 
-   Insight: "Ranking shows [top_category] has highest average at [value]"
+   Insight: "Ranking shows [top_category] has highest count"
 
 3. **PIE CHART (Distribution)**:
 
-   Query: "SELECT [status_column], COUNT(*) as count FROM [table] GROUP BY [status_column]"
+   Query: "SELECT [status_column], COUNT(*) as count FROM [table] WHERE [status_column] IS NOT NULL GROUP BY [status_column] ORDER BY count DESC"
+   → **ALWAYS** add WHERE IS NOT NULL to filter out NULLs
 
    Name: "[Status] Distribution"
 
@@ -1164,15 +1490,17 @@ ${schemaAnalysis.dataTypesSummary}
 
 4. **LINE CHART (Trend)**:
 
-   Query: "SELECT DATE([date_column]) as date, COUNT(*) as count FROM [table] GROUP BY DATE([date_column]) ORDER BY date"
+   Query: "SELECT DATE([date_column]) as date, COUNT(*) as count FROM [table] WHERE [date_column] IS NOT NULL GROUP BY DATE([date_column]) ORDER BY date LIMIT 100"
+   → **ALWAYS** add WHERE IS NOT NULL and LIMIT to ensure data exists
 
    Name: "[Activity] Trends Over Time"
 
-   Insight: "Shows daily patterns with peak on [peak_day]"
+   Insight: "Shows daily patterns with data points"
 
 5. **SCATTER PLOT (Correlation)**:
 
-   Query: "SELECT [numeric_column1], [numeric_column2] FROM [table] LIMIT 100"
+   Query: "SELECT [numeric_column1], [numeric_column2] FROM [table] WHERE [numeric_column1] IS NOT NULL AND [numeric_column2] IS NOT NULL LIMIT 100"
+   → **ALWAYS** add WHERE IS NOT NULL for both columns
 
    Name: "[Metric1] vs [Metric2] Relationship"
 
@@ -1180,11 +1508,21 @@ ${schemaAnalysis.dataTypesSummary}
 
 6. **TABLE (Detailed List)**:
 
-   Query: "SELECT [name_column], [key_metric1], [key_metric2] FROM [table] ORDER BY [key_metric1] DESC LIMIT 20"
+   Query: "SELECT [name_column], [key_metric1], [key_metric2] FROM [table] WHERE [name_column] IS NOT NULL ORDER BY [key_metric1] DESC LIMIT 20"
+   → **ALWAYS** add WHERE IS NOT NULL and LIMIT
+   → **CRITICAL**: If table only has ID, JOIN with related table: "SELECT RelatedTable.name, MainTable.metric1, MainTable.metric2 FROM MainTable JOIN RelatedTable ON MainTable.foreignKeyId = RelatedTable.id WHERE RelatedTable.name IS NOT NULL ORDER BY MainTable.metric1 DESC LIMIT 20"
+   → **NEVER** show only IDs - always include names/descriptions
 
    Name: "Top [items] by [metric]"
 
    Insight: "Detailed ranking with multiple metrics for comparison"
+
+**CRITICAL QUERY PATTERNS TO ENSURE DATA:**
+- Always start with COUNT(*) queries - they always return at least one row
+- Always add WHERE column IS NOT NULL when filtering
+- Always use LIMIT to prevent empty results from complex queries
+- Always verify the table/column exists and has data before using it
+- Prefer simple queries over complex ones - simple queries are more likely to work
 
 **ADAPTATION RULES:**
 
@@ -1272,11 +1610,12 @@ ${formatMetadata(reducedMetadata)}
     {
       "metric_name": "[Insightful, Generic Metric Name]",
       "query_type": "SQL_QUERY",
-      "query_content": "[Query using exact column names from metadata]",
+      "query_content": "[SQL query using EXACT column names from metadata - ALWAYS include names, never just IDs. JOIN with related tables when IDs are present]",
       "visualization_type": "auto",
       "insight_summary": "[Brief insight including key statistics like total, average, range if applicable]"
     }
-    // 7-9 more metrics
+    // MINIMUM 7 MORE METRICS (total of at least 8 metrics required)
+    // Ensure ALL visualization types are covered: gauge, bar_chart, pie_chart, line_chart, scatter_plot, table
   ]
 }
 
@@ -1290,8 +1629,12 @@ Before generating each metric, verify:
 5. ✅ Column types match the query (e.g., using numeric columns for AVG, date columns for DATE())
 6. ✅ Metric focuses on business value, avoids unnecessary operational details
 7. ✅ If a required column doesn't exist, the metric is skipped or adapted
+8. ✅ **CRITICAL**: Query will return data - use COUNT(*) or add WHERE IS NOT NULL, use LIMIT
+9. ✅ **CRITICAL**: Query uses the most populated tables/columns (prioritize tables with more columns)
+10. ✅ **CRITICAL**: Query is simple enough to execute successfully (avoid complex joins unless necessary)
 
 **CRITICAL REMINDERS**:
+- **NEVER RETURN EMPTY DATA** - Every query MUST return at least one row. Use COUNT(*), add WHERE IS NOT NULL, use LIMIT
 - **DETECT DOMAIN FIRST** - Analyze schema to understand what domain this is (Education, Real Estate, Medical, etc.)
 - **FOCUS ON IMPORTANT METRICS** - Generate metrics that matter for that domain (students/revenue/patients, not buses/time duration)
 - **NEVER INVENT COLUMN NAMES** - If metadata shows "totalMarks", use "totalMarks", NOT "score"
@@ -1299,6 +1642,8 @@ Before generating each metric, verify:
 - **USE ACTUAL COLUMN NAMES** - Work with the actual schema, detect what's important from table/column names
 - **ADAPT OR SKIP** - If a column doesn't exist, find an alternative or skip that metric type
 - **EXACT MATCHES ONLY** - Use column names exactly as shown in metadata
+- **PRIORITIZE SIMPLE QUERIES** - Simple COUNT(*) queries are more reliable than complex aggregations
+- **ALWAYS ADD SAFEGUARDS** - Use WHERE IS NOT NULL, LIMIT clauses, and COUNT(*) to ensure data returns
 
 **IMPORTANT**: 
 1. First, analyze the schema below to detect the domain/business context
@@ -1312,7 +1657,7 @@ Before generating each metric, verify:
     messages: [
       {
         role: 'system',
-        content: 'You are an intelligent analytics dashboard generator that analyzes schemas to detect domains and generates domain-relevant metrics. **CRITICAL RULES**: 1) FIRST: Analyze the schema (table names, column names) to detect what domain/business this database represents (Education, Real Estate, Medical, etc.). 2) THEN: Generate metrics that answer IMPORTANT questions for that domain (e.g., for Education: students, performance, fees, attendance; for Real Estate: revenue, customers, sales; for Medical: patients, staff, appointments). 3) NEVER invent column names - ONLY use columns that EXIST in the metadata provided. Before using ANY column, you MUST verify it exists in the metadata tables. 4) Work with ONLY the actual column names provided - if metadata shows "totalMarks", use "totalMarks", NOT "score". 5) Focus on business-critical metrics, avoid unnecessary operational details (buses, time duration) unless core to the business. 6) Detect what\'s important from the schema structure itself - use table/column names to understand what matters. 7) Verify every column name against metadata before using it in queries. You create sophisticated metrics that reveal important domain-specific insights using ONLY the exact column names from metadata. Always return valid JSON only.',
+        content: 'You are an intelligent analytics dashboard generator that analyzes schemas to detect domains and generates domain-relevant metrics. **CRITICAL RULES**: 1) **MINIMUM 8 METRICS REQUIRED** - Generate at least 8 metrics (8-10 total). 2) **ALL VISUALIZATION TYPES MUST BE COVERED**: gauge, bar_chart, pie_chart, line_chart, scatter_plot, table. 3) **NEVER SHOW ONLY IDs** - Always JOIN with related tables to get names/descriptions when IDs are present. Example: "SELECT Quiz.name, AVG(QuizAttempt.score) FROM QuizAttempt JOIN Quiz ON QuizAttempt.quizId = Quiz.id GROUP BY Quiz.name" (shows names, not IDs). 4) **NEVER GENERATE EMPTY QUERIES** - All queries must return data (use COUNT(*), WHERE IS NOT NULL, LIMIT). 5) FIRST: Analyze the schema (table names, column names) to detect what domain/business this database represents (Education, Real Estate, Medical, etc.). 6) THEN: Generate metrics that answer IMPORTANT questions for that domain (e.g., for Education: students, performance, fees, attendance; for Real Estate: revenue, customers, sales; for Medical: patients, staff, appointments). 7) NEVER invent column names - ONLY use columns that EXIST in the metadata provided. Before using ANY column, you MUST verify it exists in the metadata tables. 8) Work with ONLY the actual column names provided - if metadata shows "totalMarks", use "totalMarks", NOT "score". 9) Focus on business-critical metrics, avoid unnecessary operational details (buses, time duration) unless core to the business. 10) Detect what\'s important from the schema structure itself - use table/column names to understand what matters. 11) Verify every column name against metadata before using it in queries. You create sophisticated metrics that reveal important domain-specific insights using ONLY the exact column names from metadata. Always return valid JSON only.',
       },
       {
         role: 'user',
@@ -1328,7 +1673,32 @@ Before generating each metric, verify:
     throw new Error('No response from LLM');
   }
 
-  return JSON.parse(content) as DashboardMetricsResponse;
+  const result = JSON.parse(content) as DashboardMetricsResponse;
+  
+  // CRITICAL VALIDATION: Ensure minimum 8 metrics and all chart types
+  if (result.dashboard_metrics && result.dashboard_metrics.length > 0) {
+    const metrics = result.dashboard_metrics;
+    
+    // Check if we have at least 8 metrics
+    if (metrics.length < 8) {
+      console.warn(`[LLM-SERVICE] ⚠️ Only ${metrics.length} metrics generated, minimum 8 required. Requesting more metrics...`);
+      // Note: In production, you might want to retry or add more metrics here
+    }
+    
+    // Check visualization type coverage
+    const visualizationTypes = new Set(metrics.map(m => (m.visualization_type || 'auto') as string));
+    const requiredTypes = ['gauge', 'bar_chart', 'pie_chart', 'line_chart', 'scatter_plot', 'table'];
+    const missingTypes = requiredTypes.filter(type => !visualizationTypes.has(type));
+    
+    if (missingTypes.length > 0) {
+      console.warn(`[LLM-SERVICE] ⚠️ Missing visualization types: ${missingTypes.join(', ')}`);
+    }
+    
+    console.log(`[LLM-SERVICE] ✅ Generated ${metrics.length} dashboard metrics`);
+    console.log(`[LLM-SERVICE] 📊 Visualization types covered: ${Array.from(visualizationTypes).join(', ')}`);
+  }
+
+  return result;
 }
 
 /**
@@ -1467,9 +1837,18 @@ export async function understandQuestionSemantics(
   entities: string[];
   queryType: string;
   semanticSummary: string;
+  groupByPattern?: {
+    detected: boolean;
+    dimension: string;
+    requiresJoin: boolean;
+    joinEntity?: string;
+  };
 }> {
   try {
     console.log(`[LLM-SERVICE] 🧠 Step 1: Understanding question semantics: "${userQuestion}"`);
+    
+    // CRITICAL: Detect GROUP BY patterns BEFORE LLM analysis
+    const groupByPattern = detectGroupByPattern(userQuestion);
     
     const understandingPrompt = `Analyze this natural language question and extract its semantic meaning:
 
@@ -1479,8 +1858,19 @@ Extract and return JSON with:
 1. "intent": The main intent/goal of the question (e.g., "compare", "find trends", "calculate average", "identify top performers")
 2. "keyConcepts": Array of key concepts/domains mentioned (e.g., ["students", "scores", "assignments", "performance"])
 3. "entities": Array of specific entities/objects mentioned (e.g., ["student", "quiz", "assignment", "score"])
-4. "queryType": Type of query needed (e.g., "aggregation", "comparison", "trend_analysis", "filtering", "ranking")
+4. "queryType": Type of query needed (e.g., "aggregation", "comparison", "trend_analysis", "filtering", "ranking", "grouped_aggregation")
 5. "semanticSummary": A concise semantic summary that captures the meaning and context
+6. "groupByDetected": Boolean indicating if the question requires GROUP BY (e.g., "by X", "grouped by X", "per X")
+7. "groupByDimension": If groupByDetected is true, the dimension to group by (e.g., "student names", "category", "month")
+8. "requiresJoin": Boolean indicating if grouping by entity names requires JOIN with another table (e.g., "by student names" requires JOIN with Student table)
+
+CRITICAL PATTERN RECOGNITION:
+- "metric by X" or "metric grouped by X" → groupByDetected: true, groupByDimension: X
+- "by X names" or "by X" where X is an entity → requiresJoin: true (need to JOIN with X table to get names)
+- Examples:
+  * "average time by student names" → groupByDetected: true, groupByDimension: "student names", requiresJoin: true, joinEntity: "student"
+  * "count by category" → groupByDetected: true, groupByDimension: "category", requiresJoin: false
+  * "sum by month" → groupByDetected: true, groupByDimension: "month", requiresJoin: false
 
 Return ONLY valid JSON, no explanations:`;
 
@@ -1489,7 +1879,7 @@ Return ONLY valid JSON, no explanations:`;
       messages: [
         {
           role: 'system',
-          content: 'You are an expert at understanding natural language questions and extracting their semantic meaning. Return only valid JSON.',
+          content: 'You are an expert at understanding natural language questions and extracting their semantic meaning, especially GROUP BY patterns. Return only valid JSON.',
         },
         {
           role: 'user',
@@ -1498,7 +1888,7 @@ Return ONLY valid JSON, no explanations:`;
       ],
       temperature: 0.1, // Low temperature for consistent understanding
       response_format: { type: 'json_object' },
-      max_tokens: 300,
+      max_tokens: 400, // Increased to accommodate GROUP BY detection
     });
 
     const content = response.choices[0]?.message?.content;
@@ -1508,11 +1898,22 @@ Return ONLY valid JSON, no explanations:`;
 
     const understanding = JSON.parse(content);
     
+    // Merge detected pattern with LLM understanding (pattern detection takes precedence)
+    const finalGroupByPattern = groupByPattern.detected ? groupByPattern : {
+      detected: understanding.groupByDetected || false,
+      dimension: understanding.groupByDimension || '',
+      requiresJoin: understanding.requiresJoin || false,
+      joinEntity: understanding.joinEntity || undefined,
+    };
+    
     console.log(`[LLM-SERVICE] ✅ Question understanding complete:`);
     console.log(`[LLM-SERVICE]   Intent: ${understanding.intent}`);
     console.log(`[LLM-SERVICE]   Query Type: ${understanding.queryType}`);
     console.log(`[LLM-SERVICE]   Key Concepts: ${understanding.keyConcepts?.join(', ') || 'none'}`);
     console.log(`[LLM-SERVICE]   Entities: ${understanding.entities?.join(', ') || 'none'}`);
+    if (finalGroupByPattern.detected) {
+      console.log(`[LLM-SERVICE]   🎯 GROUP BY DETECTED: dimension="${finalGroupByPattern.dimension}", requiresJoin=${finalGroupByPattern.requiresJoin}${finalGroupByPattern.joinEntity ? `, joinEntity="${finalGroupByPattern.joinEntity}"` : ''}`);
+    }
     
     return {
       intent: understanding.intent || '',
@@ -1520,18 +1921,90 @@ Return ONLY valid JSON, no explanations:`;
       entities: understanding.entities || [],
       queryType: understanding.queryType || 'general',
       semanticSummary: understanding.semanticSummary || userQuestion,
+      groupByPattern: finalGroupByPattern,
     };
   } catch (error) {
     console.error('[LLM-SERVICE] ⚠️ Question understanding failed, using original question:', error);
-    // Fallback: return basic understanding from original question
+    // Fallback: detect GROUP BY pattern even on error
+    const groupByPattern = detectGroupByPattern(userQuestion);
     return {
       intent: 'general_query',
       keyConcepts: [],
       entities: [],
-      queryType: 'general',
+      queryType: groupByPattern.detected ? 'grouped_aggregation' : 'general',
       semanticSummary: userQuestion,
+      groupByPattern,
     };
   }
+}
+
+/**
+ * Detects GROUP BY patterns in natural language questions
+ * This is a critical pattern recognition function to prevent "by X" being treated as WHERE clause values
+ */
+function detectGroupByPattern(question: string): {
+  detected: boolean;
+  dimension: string;
+  requiresJoin: boolean;
+  joinEntity?: string;
+} {
+  const questionLower = question.toLowerCase();
+  
+  // Pattern: "metric by X" or "metric grouped by X" or "metric per X"
+  const groupByPatterns = [
+    /\b(?:by|grouped by|per|for each)\s+([^?.,!]+?)(?:\s+in\s+|\s*$|\?|\.|,|!)/i,
+    /\b(?:by|grouped by|per)\s+([^?.,!]+?)\s+names/i,
+  ];
+  
+  for (const pattern of groupByPatterns) {
+    const match = question.match(pattern);
+    if (match) {
+      const dimension = match[1].trim();
+      
+      // Check if dimension mentions entity names (requires JOIN)
+      const entityNamePatterns = [
+        /(\w+)\s+names?/i,  // "student names", "class names"
+        /names?\s+of\s+(\w+)/i,  // "names of students"
+      ];
+      
+      let requiresJoin = false;
+      let joinEntity: string | undefined;
+      
+      for (const entityPattern of entityNamePatterns) {
+        const entityMatch = dimension.match(entityPattern);
+        if (entityMatch) {
+          requiresJoin = true;
+          joinEntity = entityMatch[1].toLowerCase();
+          break;
+        }
+      }
+      
+      // Also check for common entity patterns
+      if (!requiresJoin && /names?|name/i.test(dimension)) {
+        // Extract entity before "names"
+        const beforeNames = dimension.match(/(\w+)\s+names?/i);
+        if (beforeNames) {
+          requiresJoin = true;
+          joinEntity = beforeNames[1].toLowerCase();
+        }
+      }
+      
+      console.log(`[LLM-SERVICE] 🎯 GROUP BY pattern detected: "${dimension}" (requiresJoin: ${requiresJoin}${joinEntity ? `, joinEntity: ${joinEntity}` : ''})`);
+      
+      return {
+        detected: true,
+        dimension,
+        requiresJoin,
+        joinEntity,
+      };
+    }
+  }
+  
+  return {
+    detected: false,
+    dimension: '',
+    requiresJoin: false,
+  };
 }
 
 /**
@@ -1550,6 +2023,12 @@ export async function generateAdhocQueryWithLangGraphAgent(
     entities: string[];
     queryType: string;
     semanticSummary: string;
+    groupByPattern?: {
+      detected: boolean;
+      dimension: string;
+      requiresJoin: boolean;
+      joinEntity?: string;
+    };
   } | null
 ): Promise<AdhocQueryResponse> {
   try {
@@ -1670,14 +2149,12 @@ export async function generateAdhocQueryWithLangGraphAgent(
 }
 
 /**
- * Identifies key tables for dashboard metrics generation
+ * Identifies key tables for dashboard metrics generation using AI
  * 
- * Intelligently scores and selects the BEST tables for analytics based on:
- * - Numeric columns (for aggregations, KPIs)
- * - Date columns (for time series, trends)
- * - Category columns (for distributions, comparisons)
- * - Column diversity (more columns = more analytical possibilities)
- * - Avoids lookup/reference tables (tables with only IDs and names)
+ * Uses AI to:
+ * 1. Understand the domain/business context from database schema
+ * 2. Select BEST tables based on domain understanding and analytical value
+ * 3. Focus on: numeric things, time things, category things, state things, total counts, distributions
  */
 async function identifyKeyTablesForDashboard(
   metadata: DataSourceMetadata,
@@ -1690,127 +2167,135 @@ async function identifyKeyTablesForDashboard(
     return allTables.map(t => t.name);
   }
 
-  // Score tables based on their analytical value for dashboard metrics
-  const tableScores = allTables.map(table => {
-    let score = 0;
-    const columns = table.columns || [];
-    const columnNames = columns.map(col => (col.name || '').toLowerCase());
-    const columnTypes = columns.map(col => (col.type || '').toUpperCase());
-    
-    // 1. NUMERIC COLUMNS (High value - for aggregations, KPIs, calculations)
-    const numericColumns = columns.filter(col => {
-      const type = (col.type || '').toUpperCase();
-      const name = (col.name || '').toLowerCase();
-      return (
-        ['INT', 'INTEGER', 'BIGINT', 'DECIMAL', 'FLOAT', 'DOUBLE', 'NUMERIC', 'REAL'].some(t => type.includes(t)) ||
-        name.match(/\b(count|total|sum|avg|amount|price|value|score|rating|percentage|cost|revenue|profit|quantity|duration|distance|weight|height|age|salary|budget|balance|fee|charge|discount|tax)\b/i)
-      );
+  console.log(`[LLM-SERVICE] 🤖 Using AI to understand domain and select best ${maxTables} tables from ${allTables.length} total tables...`);
+
+  try {
+    // Step 1: Prepare schema summary for AI analysis
+    const schemaSummary = allTables.map(table => {
+      const columns = table.columns || [];
+      const columnTypes = columns.map(col => ({
+        name: col.name,
+        type: col.type || 'unknown',
+      }));
+      
+      return {
+        tableName: table.name,
+        description: table.description || '',
+        columnCount: columns.length,
+        columns: columnTypes.slice(0, 20), // Limit to first 20 columns for token efficiency
+      };
     });
-    score += numericColumns.length * 5; // High weight for numeric columns
-    
-    // Bonus: Multiple numeric columns = more analytical possibilities
-    if (numericColumns.length >= 3) score += 10;
-    if (numericColumns.length >= 5) score += 15;
-    
-    // 2. DATE/TIME COLUMNS (Very high value - for trends, time series)
-    const dateColumns = columns.filter(col => {
-      const type = (col.type || '').toUpperCase();
-      const name = (col.name || '').toLowerCase();
-      return (
-        ['DATE', 'DATETIME', 'TIMESTAMP', 'TIME'].some(t => type.includes(t)) ||
-        name.match(/\b(date|time|created|updated|timestamp|period|year|month|day|started|ended|completed|due|deadline|schedule)\b/i)
-      );
-    });
-    score += dateColumns.length * 8; // Very high weight for date columns
-    
-    // 3. CATEGORY/STATUS COLUMNS (Medium-high value - for distributions, comparisons)
-    const categoryColumns = columns.filter(col => {
-      const name = (col.name || '').toLowerCase();
-      return name.match(/\b(status|type|category|class|group|region|state|country|department|stream|level|grade|priority|stage|phase|role|position|rank|tier|segment)\b/i);
-    });
-    score += categoryColumns.length * 3;
-    
-    // 4. COLUMN DIVERSITY (More columns = more analytical possibilities)
-    // But penalize if it's just IDs and names (lookup table)
-    const hasOnlyIdsAndNames = columns.length <= 3 && 
-      columnNames.every(name => name.includes('id') || name.includes('name') || name.includes('code'));
-    
-    if (!hasOnlyIdsAndNames) {
-      score += columns.length * 0.5; // Reward tables with more diverse columns
-    } else {
-      score -= 20; // Penalize lookup/reference tables
+
+    // Step 2: Use AI to understand domain and select best tables
+    const domainAnalysisPrompt = `You are an expert database analyst. Analyze the database schema below and:
+
+1. **UNDERSTAND THE DOMAIN**: What business/domain does this database represent? (Education, Healthcare, Finance, Retail, Real Estate, etc.)
+   - Analyze table names, column names, and descriptions
+   - Identify the primary business context
+
+2. **SELECT BEST TABLES FOR ANALYTICS**: From the ${allTables.length} tables provided, select the top ${maxTables} tables that are MOST VALUABLE for dashboard analytics.
+
+**SELECTION CRITERIA - Focus on tables with:**
+- **NUMERIC THINGS**: Tables with numeric columns (scores, amounts, counts, totals, percentages, quantities, metrics)
+- **TIME THINGS**: Tables with date/time columns (created_at, updated_at, date, timestamp, period, deadline)
+- **CATEGORY THINGS**: Tables with category/classification columns (status, type, category, class, group, department, level)
+- **STATE THINGS**: Tables with state/status columns (state, status, phase, stage, condition)
+- **TOTAL COUNTS THINGS**: Tables that track counts, totals, aggregations
+- **DISTRIBUTION TYPE THINGS**: Tables suitable for distribution analysis (pie charts, bar charts by category)
+
+**AVOID:**
+- Lookup/reference tables (only IDs and names)
+- System tables (log, audit, temp, cache, session)
+- Tables with very few columns (< 3 columns)
+- Tables that don't support meaningful analytics
+
+**DATABASE SCHEMA:**
+${JSON.stringify(schemaSummary, null, 2)}
+
+**RETURN JSON FORMAT:**
+{
+  "domain": "Detected domain (e.g., Education, Healthcare, Finance, etc.)",
+  "domainReasoning": "Brief explanation of why you identified this domain",
+  "selectedTables": [
+    {
+      "tableName": "exact table name",
+      "priority": 1-${maxTables},
+      "reasoning": "Why this table is valuable for analytics - mention numeric/time/category/state/count/distribution aspects"
     }
-    
-    // 5. ANALYTICAL COLUMN PATTERNS (Bonus for columns that suggest analytics)
-    const analyticalPatterns = [
-      /\b(avg|average|mean|median|total|sum|count|max|min|range|variance|stddev)\b/i,
-      /\b(performance|efficiency|utilization|rate|ratio|percentage|percent)\b/i,
-      /\b(trend|growth|change|difference|comparison|ranking)\b/i,
-      /\b(score|rating|grade|level|tier|rank)\b/i,
-    ];
-    
-    let analyticalColumnCount = 0;
-    columnNames.forEach(name => {
-      if (analyticalPatterns.some(pattern => pattern.test(name))) {
-        analyticalColumnCount++;
-      }
+  ]
+}
+
+**CRITICAL**: Return ONLY valid JSON. Select exactly ${maxTables} tables, ordered by priority (1 = highest priority).`;
+
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an expert database analyst specializing in identifying the best tables for business analytics and dashboard metrics. Return only valid JSON.',
+        },
+        {
+          role: 'user',
+          content: domainAnalysisPrompt,
+        },
+      ],
+      temperature: 0.2, // Low temperature for consistent analysis
+      response_format: { type: 'json_object' },
+      max_tokens: 2000,
     });
-    score += analyticalColumnCount * 4;
-    
-    // 6. AVOID LOOKUP/REFERENCE TABLES
-    // Tables with only 1-2 columns are likely lookup tables
-    if (columns.length <= 2) {
-      score -= 30;
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No response from AI for domain analysis');
     }
+
+    const analysis = JSON.parse(content);
     
-    // 7. PREFER TABLES WITH MULTIPLE COLUMN TYPES
-    const hasNumeric = numericColumns.length > 0;
-    const hasDate = dateColumns.length > 0;
-    const hasCategory = categoryColumns.length > 0;
-    const hasText = columns.some(col => {
-      const type = (col.type || '').toUpperCase();
-      return type.includes('VARCHAR') || type.includes('TEXT') || type.includes('CHAR');
+    console.log(`[LLM-SERVICE] 🎯 Domain detected: ${analysis.domain || 'Unknown'}`);
+    if (analysis.domainReasoning) {
+      console.log(`[LLM-SERVICE] 📊 Domain reasoning: ${analysis.domainReasoning}`);
+    }
+
+    const selectedTables = analysis.selectedTables || [];
+    
+    if (selectedTables.length === 0) {
+      console.warn(`[LLM-SERVICE] ⚠️ AI returned no tables, falling back to first ${maxTables} tables`);
+      return allTables.slice(0, maxTables).map(t => t.name);
+    }
+
+    // Extract table names in priority order
+    const tableNames = selectedTables
+      .sort((a: any, b: any) => (a.priority || 999) - (b.priority || 999))
+      .map((item: any) => item.tableName)
+      .filter((name: string) => allTables.some(t => t.name === name)); // Validate table exists
+
+    // Ensure we have exactly maxTables (or as many as available)
+    const finalTables = tableNames.slice(0, maxTables);
+
+    console.log(`[LLM-SERVICE] 🎯 AI Selected ${finalTables.length} BEST tables for dashboard (${analysis.domain || 'domain'}):`);
+    selectedTables.slice(0, finalTables.length).forEach((item: any, idx: number) => {
+      console.log(`[LLM-SERVICE]   ${idx + 1}. ${item.tableName}${item.reasoning ? ` - ${item.reasoning}` : ''}`);
     });
+
+    return finalTables;
+  } catch (error) {
+    console.error('[LLM-SERVICE] ❌ AI-based table selection failed:', error);
+    console.log('[LLM-SERVICE] ⚠️ Falling back to simple selection (first tables with most columns)');
     
-    let typeDiversity = 0;
-    if (hasNumeric) typeDiversity++;
-    if (hasDate) typeDiversity++;
-    if (hasCategory) typeDiversity++;
-    if (hasText) typeDiversity++;
-    
-    // Bonus for tables with multiple column types (more analytical possibilities)
-    if (typeDiversity >= 3) score += 15;
-    if (typeDiversity >= 4) score += 25;
-    
-    // 8. AVOID SYSTEM/METADATA TABLES
-    const tableNameLower = (table.name || '').toLowerCase();
-    if (tableNameLower.includes('log') || 
-        tableNameLower.includes('audit') || 
-        tableNameLower.includes('temp') ||
-        tableNameLower.includes('cache') ||
-        tableNameLower.includes('session')) {
-      score -= 15; // Reduce priority for system tables
-    }
-    
-    return { name: table.name, score, details: {
-      numericColumns: numericColumns.length,
-      dateColumns: dateColumns.length,
-      categoryColumns: categoryColumns.length,
-      totalColumns: columns.length,
-      typeDiversity,
-    }};
-  });
-  
-  // Sort by score (highest first) and take top tables
-  tableScores.sort((a, b) => b.score - a.score);
-  const selectedTables = tableScores.slice(0, maxTables);
-  
-  console.log(`[LLM-SERVICE] 🎯 Selected ${selectedTables.length} BEST tables for dashboard:`);
-  selectedTables.forEach((table, idx) => {
-    console.log(`[LLM-SERVICE]   ${idx + 1}. ${table.name} (score: ${table.score.toFixed(1)}, numeric: ${table.details.numericColumns}, date: ${table.details.dateColumns}, category: ${table.details.categoryColumns}, columns: ${table.details.totalColumns})`);
-  });
-  
-  return selectedTables.map(t => t.name);
+    // Fallback: Select tables with most columns (simple heuristic)
+    const fallbackTables = allTables
+      .map(table => ({
+        name: table.name,
+        columnCount: (table.columns || []).length,
+      }))
+      .filter(t => t.columnCount >= 3) // At least 3 columns
+      .sort((a, b) => b.columnCount - a.columnCount)
+      .slice(0, maxTables)
+      .map(t => t.name);
+
+    console.log(`[LLM-SERVICE] ✅ Fallback: Selected ${fallbackTables.length} tables by column count`);
+    return fallbackTables;
+  }
 }
 
 /**

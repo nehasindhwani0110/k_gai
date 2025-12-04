@@ -11,7 +11,7 @@ datasource db {
 
 model QueryHistory {
   id           String   @id @default(cuid())
-  userQuestion String
+  userQuestion String   @db.Text // User question (Text for long questions)
   queryType    String // SQL_QUERY or QUERY_LOGIC
   queryContent String   @db.Text // SQL query or query logic (Text for long queries)
   sourceType   String // SQL_DB, CSV_FILE, JSON_FILE, etc.

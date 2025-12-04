@@ -1,15 +1,23 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
+import Sidebar from '@/components/layout/Sidebar';
+import MobileHeader from '@/components/layout/MobileHeader';
 import AdhocQuery from '@/components/analytics/AdhocQuery';
 import DashboardMetrics from '@/components/analytics/DashboardMetrics';
 import FileUpload from '@/components/analytics/FileUpload';
 
 export default function AnalyticsPage() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'query'>('dashboard');
+  const searchParams = useSearchParams();
+  const tabParam = searchParams?.get('tab');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'query'>(
+    tabParam === 'query' ? 'query' : 'dashboard'
+  );
   const [metadata, setMetadata] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [dataSourceType, setDataSourceType] = useState<'example' | 'csv'>('example');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Example metadata - in production, this would come from API or user selection
   const exampleMetadata = {
@@ -174,22 +182,36 @@ export default function AnalyticsPage() {
 
   if (loading || !metadata) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-lg">Loading analytics...</div>
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <div className="text-lg text-gray-600">Loading analytics...</div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <h1 className="text-3xl font-bold">Analytics Engine</h1>
-          <p className="text-gray-600 mt-1">Multi-tenant analytics for education systems</p>
-        </div>
-      </div>
+    <div className="min-h-screen bg-gray-50 flex">
+      {/* Sidebar */}
+      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <div className="max-w-7xl mx-auto px-6 py-6">
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col lg:ml-0">
+        {/* Mobile Header */}
+        <MobileHeader onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
+
+        {/* Desktop Header */}
+        <div className="hidden lg:block bg-white shadow-sm border-b">
+          <div className="px-6 py-4">
+            <h1 className="text-3xl font-bold text-gray-900">Analytics Dashboard</h1>
+            <p className="text-gray-600 mt-1">Multi-tenant, schema-agnostic analytics engine</p>
+          </div>
+        </div>
+
+        {/* Content Area */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-7xl mx-auto px-4 lg:px-6 py-6">
         {/* File Upload Section */}
         <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
           <h2 className="text-xl font-semibold mb-4">Data Source</h2>
@@ -255,8 +277,10 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {activeTab === 'dashboard' && <DashboardMetrics metadata={metadata} />}
-        {activeTab === 'query' && <AdhocQuery metadata={metadata} />}
+            {activeTab === 'dashboard' && <DashboardMetrics metadata={metadata} />}
+            {activeTab === 'query' && <AdhocQuery metadata={metadata} />}
+          </div>
+        </div>
       </div>
     </div>
   );

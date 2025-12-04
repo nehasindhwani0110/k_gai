@@ -134,18 +134,80 @@ export default function PieChart({ data, title }: PieChartProps) {
     );
   };
 
-  // Custom tooltip
+  // Enhanced custom tooltip with detailed breakdown
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
       const data = payload[0].payload;
       const percent = ((data.value / total) * 100).toFixed(1);
+      const rank = formattedData.findIndex(d => d.name === data.name) + 1;
+      const isTop3 = rank <= 3;
+      
       return (
-        <div className="bg-white border border-gray-200 rounded-lg shadow-xl p-3 min-w-[180px]">
-          <p className="text-gray-900 font-semibold text-sm mb-1">{data.name}</p>
-          <p className="text-gray-700 text-lg font-bold">
-            {data.value.toLocaleString()}
-          </p>
-          <p className="text-gray-500 text-xs mt-1">{percent}% of total</p>
+        <div className="bg-white border-2 border-gray-300 rounded-xl shadow-2xl p-4 min-w-[220px] backdrop-blur-sm">
+          {/* Header */}
+          <div className="mb-3 pb-3 border-b border-gray-200">
+            <div className="flex items-center gap-2 mb-1">
+              {isTop3 && (
+                <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                  rank === 1 ? 'bg-yellow-100 text-yellow-700' :
+                  rank === 2 ? 'bg-gray-100 text-gray-700' :
+                  'bg-orange-100 text-orange-700'
+                }`}>
+                  #{rank}
+                </span>
+              )}
+              <p className="text-gray-500 text-xs font-semibold uppercase tracking-wide">
+                Category
+              </p>
+            </div>
+            <p className="text-gray-900 text-base font-bold">{data.name}</p>
+          </div>
+          
+          {/* Value Display */}
+          <div className="mb-3">
+            <div className="flex items-baseline gap-2">
+              <p className="text-gray-900 text-2xl font-bold">
+                {data.value.toLocaleString()}
+              </p>
+              <span className="text-gray-500 text-sm font-medium">value</span>
+            </div>
+          </div>
+          
+          {/* Statistics */}
+          <div className="space-y-2 pt-3 border-t border-gray-100">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Percentage</span>
+              <span className={`text-lg font-bold ${isTop3 ? 'text-green-600' : 'text-blue-600'}`}>
+                {percent}%
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Rank</span>
+              <span className="text-sm font-semibold text-gray-700">
+                #{rank} of {formattedData.length}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Remaining</span>
+              <span className="text-sm font-semibold text-purple-600">
+                {(100 - parseFloat(percent)).toFixed(1)}%
+              </span>
+            </div>
+          </div>
+          
+          {/* Visual Progress Bar */}
+          <div className="mt-3 pt-3 border-t border-gray-100">
+            <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${
+                  isTop3 
+                    ? 'bg-gradient-to-r from-green-500 to-green-600' 
+                    : 'bg-gradient-to-r from-blue-500 to-purple-600'
+                }`}
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+          </div>
         </div>
       );
     }
@@ -153,52 +215,71 @@ export default function PieChart({ data, title }: PieChartProps) {
   };
 
   return (
-    <div className="w-full h-full min-h-[450px] bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-shadow duration-300 flex flex-col overflow-hidden">
+    <div className="w-full h-full min-h-[450px] bg-white rounded-xl border border-gray-200 shadow-lg hover:shadow-2xl transition-all duration-300 flex flex-col overflow-hidden group">
       {title && (
-        <div className="px-6 pt-5 pb-3 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
-          <h4 className="text-lg font-semibold text-gray-900 mb-1">{title}</h4>
-          <div className="flex items-center gap-1 text-xs text-gray-600 mt-2">
-            <span className="w-2 h-2 rounded-full bg-purple-500"></span>
-            <span>Total: <span className="font-semibold text-gray-900">{total.toLocaleString()}</span></span>
-            <span className="mx-2">•</span>
-            <span>{formattedData.length} categories</span>
+        <div className="px-6 pt-6 pb-4 border-b border-gray-100 bg-gradient-to-br from-purple-50 via-white to-pink-50">
+          <h4 className="text-xl font-bold text-gray-900 mb-2">{title}</h4>
+          <div className="flex items-center gap-4 text-xs text-gray-600 mt-2 flex-wrap">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-lg">
+              <span className="w-2.5 h-2.5 rounded-full bg-purple-500 animate-pulse"></span>
+              <span className="font-semibold text-gray-900">{total.toLocaleString()}</span>
+              <span className="text-gray-500">Total</span>
+            </div>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 rounded-lg">
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span>
+              <span className="font-semibold text-gray-900">{formattedData.length}</span>
+              <span className="text-gray-500">Categories</span>
+            </div>
           </div>
         </div>
       )}
-      <div className="flex-1 p-6 min-h-[350px] flex items-center justify-center" style={{ height: '350px' }}>
+      <div className="flex-1 p-6 min-h-[350px] flex items-center justify-center bg-gradient-to-br from-gray-50/50 to-white" style={{ height: '350px' }}>
         <ResponsiveContainer width="100%" height={350}>
           <RechartsPieChart>
+            <defs>
+              {POWERBI_COLORS.map((color, index) => (
+                <linearGradient key={index} id={`pieGradient${index}`} x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stopColor={color} stopOpacity={1}/>
+                  <stop offset="100%" stopColor={color} stopOpacity={0.7}/>
+                </linearGradient>
+              ))}
+            </defs>
             <Pie
               data={formattedData}
               cx="50%"
               cy="50%"
               labelLine={false}
               label={renderCustomLabel}
-              outerRadius={110}
-              innerRadius={44}
+              outerRadius={115}
+              innerRadius={50}
               fill="#8884d8"
               dataKey="value"
               nameKey="name"
-              animationDuration={800}
+              animationDuration={1200}
               animationEasing="ease-out"
+              isAnimationActive={true}
             >
               {formattedData.map((entry, index) => (
                 <Cell 
                   key={`cell-${index}`} 
-                  fill={POWERBI_COLORS[index % POWERBI_COLORS.length]}
+                  fill={`url(#pieGradient${index % POWERBI_COLORS.length})`}
                   stroke="#fff"
-                  strokeWidth={2}
-                  style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.1))' }}
+                  strokeWidth={3}
+                  style={{ 
+                    filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.15))',
+                    transition: 'all 0.3s ease',
+                  }}
+                  className="hover:opacity-90"
                 />
               ))}
             </Pie>
             <Tooltip content={<CustomTooltip />} />
             <Legend 
               verticalAlign="bottom" 
-              height={50}
+              height={60}
               iconType="circle"
-              wrapperStyle={{ fontSize: '12px', fontWeight: 500 }}
-              formatter={(value: string) => <span className="text-gray-700">{value}</span>}
+              wrapperStyle={{ fontSize: '12px', fontWeight: 600, paddingTop: '20px' }}
+              formatter={(value: string) => <span className="text-gray-700 font-medium">{value}</span>}
             />
           </RechartsPieChart>
         </ResponsiveContainer>

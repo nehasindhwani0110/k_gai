@@ -8,106 +8,12 @@ import AIAnalyticsSuggestions from './AIAnalyticsSuggestions';
 import QueryHistory from './QueryHistory';
 import { autoSelectVisualizationType } from '@/analytics-engine/services/visualization-selector';
 import { VisualizationType } from '@/analytics-engine/types';
+import EnhancedDataModal from './EnhancedDataModal';
 
 interface AdhocQueryProps {
   metadata: any;
 }
 
-interface DataModalProps {
-  title: string;
-  query: string;
-  data: any[];
-  onClose: () => void;
-}
-
-function DataModal({ title, query, data, onClose }: DataModalProps) {
-  return (
-    <div 
-      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
-    >
-      <div 
-        className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Modal Header */}
-        <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white p-6 flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold mb-2">{title}</h2>
-            <p className="text-blue-100 text-sm">Detailed data view</p>
-          </div>
-          <button
-            onClick={onClose}
-            className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors"
-            aria-label="Close modal"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Modal Content */}
-        <div className="flex-1 overflow-auto p-6">
-          {/* Query Info */}
-          {query && (
-            <div className="mb-6 bg-gray-50 rounded-lg p-4">
-              <h3 className="font-semibold text-gray-700 mb-2">Generated Query:</h3>
-              <pre className="bg-white p-3 rounded border overflow-x-auto text-sm font-mono">
-                {query}
-              </pre>
-            </div>
-          )}
-
-          {/* Data Table */}
-          {data.length > 0 && (
-            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-              <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
-                <h3 className="font-semibold text-gray-700">
-                  Data ({data.length} {data.length === 1 ? 'row' : 'rows'})
-                </h3>
-              </div>
-              <div className="overflow-x-auto max-h-[400px]">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 sticky top-0">
-                    <tr>
-                      {Object.keys(data[0]).map((key) => (
-                        <th key={key} className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider border-b border-gray-200">
-                          {key}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {data.map((row, index) => (
-                      <tr key={index} className="hover:bg-gray-50 transition-colors">
-                        {Object.values(row).map((value: any, cellIndex) => (
-                          <td key={cellIndex} className="px-4 py-3 text-gray-700 whitespace-nowrap">
-                            {typeof value === 'number' ? value.toLocaleString() : String(value || '-')}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Modal Footer */}
-        <div className="bg-gray-50 px-6 py-4 border-t border-gray-200 flex justify-end">
-          <button
-            onClick={onClose}
-            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function AdhocQuery({ metadata }: AdhocQueryProps) {
   const [question, setQuestion] = useState('');
@@ -446,15 +352,33 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
               
               return (
                 <div 
-                  className="mt-6 cursor-pointer hover:opacity-90 transition-opacity"
+                  className="mt-6 cursor-pointer hover:scale-[1.01] transition-all duration-300 group relative"
                   onClick={() => setShowDataModal(true)}
                   title="Click to view detailed data"
                 >
-                  <VisualizationRenderer
-                    type={vizType}
-                    data={queryResults}
-                    title={question}
-                  />
+                  <div className="relative">
+                    <VisualizationRenderer
+                      type={vizType}
+                      data={queryResults}
+                      title={question}
+                    />
+                    {/* Enhanced Hover Overlay */}
+                    <div className="absolute inset-0 bg-gradient-to-br from-blue-600/0 to-purple-600/0 group-hover:from-blue-600/5 group-hover:to-purple-600/5 rounded-xl transition-all duration-300 pointer-events-none z-10" />
+                    <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-all duration-300 transform translate-y-2 group-hover:translate-y-0 z-20 pointer-events-none">
+                      <div className="bg-gradient-to-r from-blue-600 to-purple-600 text-white text-xs px-4 py-2 rounded-lg shadow-xl flex items-center gap-2">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                        <span className="font-semibold">Click for detailed view</span>
+                      </div>
+                    </div>
+                    <div className="absolute bottom-4 left-4 opacity-0 group-hover:opacity-100 transition-all duration-300 transform translate-y-2 group-hover:translate-y-0 z-20 pointer-events-none">
+                      <div className="bg-white/90 backdrop-blur-sm text-gray-700 text-xs px-3 py-1.5 rounded-lg shadow-lg border border-gray-200">
+                        <span className="font-medium">{queryResults.length} records</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               );
             } catch (error) {
@@ -471,10 +395,11 @@ export default function AdhocQuery({ metadata }: AdhocQueryProps) {
 
       {/* Data Details Modal */}
       {showDataModal && queryResults.length > 0 && (
-        <DataModal
+        <EnhancedDataModal
           title={question || 'Query Results'}
           query={result?.query_content || ''}
           data={queryResults}
+          insightSummary={result?.insight_summary}
           onClose={() => setShowDataModal(false)}
         />
       )}

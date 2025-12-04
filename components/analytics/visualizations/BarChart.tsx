@@ -1,5 +1,6 @@
 'use client';
 
+import React from 'react';
 import { BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
 import { parseDate, formatDateReadable } from '@/analytics-engine/utils/date-utils';
 
@@ -9,19 +10,68 @@ interface BarChartProps {
 }
 
 /**
+ * Formats column name to descriptive label
+ */
+function formatColumnLabel(columnName: string): string {
+  let label = columnName
+    .replace(/_/g, ' ')
+    .replace(/([A-Z])/g, ' $1')
+    .trim()
+    .split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+  
+  // Replace common abbreviations
+  label = label.replace(/\bId\b/g, 'ID');
+  label = label.replace(/\bAvg\b/g, 'Average');
+  label = label.replace(/\bCnt\b/g, 'Count');
+  label = label.replace(/\bPct\b/g, 'Percentage');
+  label = label.replace(/\bNum\b/g, 'Number');
+  
+  // Make it more descriptive
+  if (label.toLowerCase().includes('count')) {
+    label = label.replace(/\bCount\b/i, 'Total Count');
+  }
+  if (label.toLowerCase().includes('amount')) {
+    label = label.replace(/\bAmount\b/i, 'Total Amount');
+  }
+  
+  return label;
+}
+
+/**
  * Formats date/time values for chart display
  */
 function formatDateForChart(value: any): string {
   if (!value) return '';
   
-  const date = parseDate(String(value));
+  const strValue = String(value).trim();
+  
+  // CRITICAL: Don't format pure numbers as dates (e.g., "100", "981")
+  // Only format if it looks like a date string (contains date separators or date patterns)
+  const looksLikeDate = /^\d{4}-\d{2}-\d{2}|^\d{2}\/\d{2}\/\d{4}|^\d{2}-\d{2}-\d{4}|^\d{4}\/\d{2}\/\d{2}/.test(strValue);
+  const isPureNumber = /^\d+$/.test(strValue);
+  
+  // If it's a pure number (no separators), don't treat it as a date
+  if (isPureNumber && !looksLikeDate) {
+    return strValue;
+  }
+  
+  const date = parseDate(strValue);
   if (date) {
+    // Additional validation: check if the parsed date makes sense
+    // Reject dates that are clearly wrong (like year 100 for "100")
+    const year = date.getFullYear();
+    if (year < 1900 && isPureNumber) {
+      // This is likely a number, not a date
+      return strValue;
+    }
+    
     // Use readable format like "Jan 2024" or "2024-01-15"
     const formatted = formatDateReadable(date);
     if (formatted) return formatted;
     
     // Fallback to short date format
-    const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     
@@ -118,45 +168,90 @@ export default function BarChart({ data, title }: BarChartProps) {
   });
   
   // Check for date/time columns by name and content
+  // CRITICAL: Only detect as date column if column name suggests it OR values are actual date strings
   const timeKey = keys.find(key => {
     const lowerKey = key.toLowerCase();
     const isTimeByName = /date|time|year|month|day|week|quarter|created|updated|period/i.test(lowerKey);
-    if (isTimeByName) return true;
-    // Also check if values look like dates
+    if (isTimeByName) {
+      // Double-check: if column name suggests date, verify values are actually dates
+      const sampleVal = data[0]?.[key];
+      if (sampleVal !== null && sampleVal !== undefined) {
+        const strVal = String(sampleVal);
+        // Reject pure numbers even if column name suggests date
+        if (/^\d+$/.test(strVal.trim())) {
+          return false; // Pure number, not a date
+        }
+        // Only accept if it looks like a date string
+        return /^\d{4}-\d{2}-\d{2}|^\d{2}\/\d{2}\/\d{4}|^\d{2}-\d{2}-\d{4}/.test(strVal);
+      }
+      return true; // Column name suggests date, assume it's correct
+    }
+    // Also check if values look like dates (but not pure numbers)
     const sampleVal = data[0]?.[key];
     if (sampleVal && typeof sampleVal === 'string') {
-      return /^\d{4}-\d{2}-\d{2}|^\d{2}\/\d{2}\/\d{4}/.test(sampleVal);
+      const strVal = String(sampleVal).trim();
+      // Reject pure numbers
+      if (/^\d+$/.test(strVal)) {
+        return false;
+      }
+      // Only accept actual date strings
+      return /^\d{4}-\d{2}-\d{2}|^\d{2}\/\d{2}\/\d{4}|^\d{2}-\d{2}-\d{4}/.test(strVal);
     }
     return false;
   });
   
-  // Smart column selection based on column names and types
+  // Smart column selection - PREFER NAME/LABEL COLUMNS OVER IDs
+  // Prefer columns with _name, _label, _formatted suffixes
+  const nameLabelColumns = keys.filter(k => {
+    const lower = k.toLowerCase();
+    return lower.includes('_name') || lower.includes('_label') || lower.includes('_formatted') || 
+           lower.includes('month_name') || lower.includes('date_label');
+  });
+  
   // Value column patterns (aggregations, metrics)
   const valuePatterns = ['count', 'total', 'sum', 'avg', 'average', 'mean', 'max', 'min', 'amount', 'value', 'score', 'rating', 'attendance', 'content', 'quantity'];
   // Category column patterns (dimensions, groups)
   const categoryPatterns = ['name', 'category', 'type', 'status', 'group', 'label', 'city', 'country', 'region', 'item'];
   
-  let categoryKey = stringCols.length > 0 ? stringCols[0] : keys[0];
+  // Prefer name/label columns for category
+  let categoryKey = nameLabelColumns.length > 0 
+    ? nameLabelColumns[0] 
+    : (stringCols.length > 0 ? stringCols[0] : keys[0]);
   let valueKey = numericCols.find(k => k !== categoryKey) || numericCols[0] || keys[1] || keys[0];
   
-  // Prefer date/time column as category if available
-  if (timeKey) {
+  // Prefer date_label or formatted date columns over raw dates
+  const dateLabelKey = keys.find(k => {
+    const lower = k.toLowerCase();
+    return (lower.includes('date_label') || lower.includes('date_formatted') || lower.includes('month_name')) && 
+           !lower.includes('_number');
+  });
+  
+  // Prefer date/time column as category if available (with formatted version if exists)
+  if (dateLabelKey) {
+    categoryKey = dateLabelKey;
+    valueKey = numericCols.find(k => k !== dateLabelKey && !k.toLowerCase().includes('_number')) || 
+               numericCols[0] || keys.find(k => k !== dateLabelKey) || keys[1];
+  } else if (timeKey) {
     categoryKey = timeKey;
-    // Find value column excluding the time key
-    valueKey = numericCols.find(k => k !== timeKey) || numericCols[0] || keys.find(k => k !== timeKey) || keys[1];
+    valueKey = numericCols.find(k => k !== timeKey && !k.toLowerCase().includes('_number')) || 
+               numericCols[0] || keys.find(k => k !== timeKey) || keys[1];
   } else {
-    // Try to identify by column name patterns
+    // Try to identify by column name patterns - prefer names over IDs
+    const categoryKeyByName = keys.find(key => {
+      const lowerKey = key.toLowerCase();
+      const isNameLabel = lowerKey.includes('_name') || lowerKey.includes('_label');
+      const matchesPattern = categoryPatterns.some(p => lowerKey.includes(p));
+      const isNotId = !lowerKey.endsWith('_id') && !lowerKey.endsWith('id');
+      return (isNameLabel || (matchesPattern && isNotId)) && (stringCols.includes(key) || key === timeKey);
+    });
+    
     const valueKeyByName = keys.find(key => {
       const lowerKey = key.toLowerCase();
       return valuePatterns.some(p => lowerKey.includes(p)) && numericCols.includes(key);
     });
-    const categoryKeyByName = keys.find(key => {
-      const lowerKey = key.toLowerCase();
-      return categoryPatterns.some(p => lowerKey.includes(p)) && (stringCols.includes(key) || key === timeKey);
-    });
     
-    if (valueKeyByName) valueKey = valueKeyByName;
     if (categoryKeyByName) categoryKey = categoryKeyByName;
+    if (valueKeyByName) valueKey = valueKeyByName;
   }
   
   // If we have exactly 2 columns, use them intelligently
@@ -238,64 +333,134 @@ export default function BarChart({ data, title }: BarChartProps) {
     };
   });
 
-  // Custom tooltip component
+  // Enhanced custom tooltip component with detailed information
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       // Find original value if available
       const dataPoint = chartData.find(d => d[categoryKey] === label);
       const originalLabel = dataPoint?.[`${categoryKey}_original`] || label;
+      const value = payload[0].value;
+      const percentage = ((value / total) * 100).toFixed(1);
+      const isHighValue = value >= maxValue * 0.8;
       
       return (
-        <div className="bg-white border border-gray-200 rounded-lg shadow-xl p-3 min-w-[150px]">
-          <p className="text-gray-600 text-xs font-medium mb-1">
-            {isDateColumn && originalLabel !== label ? String(originalLabel) : String(label)}
-          </p>
-          <p className="text-gray-900 text-lg font-bold">
-            {typeof payload[0].value === 'number' 
-              ? payload[0].value.toLocaleString() 
-              : payload[0].value}
-          </p>
-          <p className="text-gray-500 text-xs mt-1">{valueKey}</p>
+        <div className="bg-white border-2 border-gray-300 rounded-xl shadow-2xl p-4 min-w-[200px] backdrop-blur-sm">
+          {/* Header */}
+          <div className="mb-3 pb-3 border-b border-gray-200">
+            <p className="text-gray-500 text-xs font-semibold uppercase tracking-wide mb-1">
+              {formatColumnLabel(categoryKey)}
+            </p>
+            <p className="text-gray-900 text-base font-bold">
+              {isDateColumn && originalLabel !== label ? String(originalLabel) : String(label)}
+            </p>
+          </div>
+          
+          {/* Value Display */}
+          <div className="mb-3">
+            <div className="flex items-baseline gap-2">
+              <p className="text-gray-900 text-2xl font-bold">
+                {typeof value === 'number' 
+                  ? value.toLocaleString() 
+                  : value}
+              </p>
+              <span className="text-gray-500 text-sm font-medium">{formatColumnLabel(valueKey)}</span>
+            </div>
+          </div>
+          
+          {/* Statistics */}
+          <div className="space-y-2 pt-3 border-t border-gray-100">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Percentage</span>
+              <span className={`text-sm font-bold ${isHighValue ? 'text-green-600' : 'text-blue-600'}`}>
+                {percentage}%
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Rank</span>
+              <span className="text-sm font-semibold text-gray-700">
+                #{chartData.findIndex(d => d[categoryKey] === label) + 1} of {chartData.length}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">vs Max</span>
+              <span className="text-sm font-semibold text-purple-600">
+                {((value / maxValue) * 100).toFixed(1)}%
+              </span>
+            </div>
+          </div>
+          
+          {/* Visual Indicator */}
+          <div className="mt-3 pt-3 border-t border-gray-100">
+            <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${
+                  isHighValue ? 'bg-gradient-to-r from-green-500 to-green-600' : 'bg-gradient-to-r from-blue-500 to-purple-600'
+                }`}
+                style={{ width: `${(value / maxValue) * 100}%` }}
+              />
+            </div>
+          </div>
         </div>
       );
     }
     return null;
   };
   
-  // Calculate optimal interval
-  const labelInterval = calculateInterval(chartData.length);
+  // For charts, always show all labels - don't hide any to ensure completeness
+  // Only rotate labels if there are many data points or it's a date column
   const needsRotation = chartData.length > 5 || isDateColumn;
 
   return (
-    <div className="w-full h-full min-h-[450px] bg-white rounded-lg border border-gray-200 shadow-sm hover:shadow-md transition-shadow duration-300 flex flex-col overflow-hidden">
+    <div className="w-full h-full min-h-[450px] bg-white rounded-xl border border-gray-200 shadow-lg hover:shadow-2xl transition-all duration-300 flex flex-col overflow-hidden group">
       {title && (
-        <div className="px-6 pt-5 pb-3 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
-          <h4 className="text-lg font-semibold text-gray-900 mb-1">{title}</h4>
+        <div className="px-6 pt-6 pb-4 border-b border-gray-100 bg-gradient-to-br from-blue-50 via-white to-purple-50">
+          <h4 className="text-xl font-bold text-gray-900 mb-2">{title}</h4>
           <div className="flex items-center gap-6 text-xs text-gray-600 mt-2">
-            <div className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-blue-500"></span>
-              <span>Total: <span className="font-semibold text-gray-900">{total.toLocaleString()}</span></span>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 rounded-lg">
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse"></span>
+              <span className="font-semibold text-gray-900">{total.toLocaleString()}</span>
+              <span className="text-gray-500">Total</span>
             </div>
-            <div className="flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-purple-500"></span>
-              <span>Max: <span className="font-semibold text-gray-900">{maxValue.toLocaleString()}</span></span>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-50 rounded-lg">
+              <span className="w-2.5 h-2.5 rounded-full bg-purple-500"></span>
+              <span className="font-semibold text-gray-900">{maxValue.toLocaleString()}</span>
+              <span className="text-gray-500">Peak</span>
+            </div>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 rounded-lg">
+              <span className="w-2.5 h-2.5 rounded-full bg-green-500"></span>
+              <span className="font-semibold text-gray-900">{chartData.length}</span>
+              <span className="text-gray-500">Items</span>
             </div>
           </div>
         </div>
       )}
-      <div className="flex-1 p-6 min-h-[350px]" style={{ height: '350px' }}>
+      <div className="flex-1 p-6 min-h-[350px] bg-gradient-to-br from-gray-50/50 to-white" style={{ height: '350px' }}>
         <ResponsiveContainer width="100%" height={350}>
           <RechartsBarChart 
             data={chartData}
-            margin={{ top: 10, right: 20, left: 0, bottom: needsRotation ? 80 : 50 }}
-            barCategoryGap="15%"
+            margin={{ top: 20, right: 30, left: 10, bottom: needsRotation ? 80 : 50 }}
+            barCategoryGap="20%"
           >
             <defs>
               {GRADIENT_COLORS.map((gradient, index) => (
-                <linearGradient key={index} id={`powerbiGradient${index}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={gradient.from} stopOpacity={1}/>
-                  <stop offset="100%" stopColor={gradient.to} stopOpacity={0.8}/>
-                </linearGradient>
+                <React.Fragment key={index}>
+                  <linearGradient id={`powerbiGradient${index}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={gradient.from} stopOpacity={1}/>
+                    <stop offset="50%" stopColor={gradient.from} stopOpacity={0.9}/>
+                    <stop offset="100%" stopColor={gradient.to} stopOpacity={0.7}/>
+                  </linearGradient>
+                  <filter id={`barShadow${index}`} x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+                    <feOffset dx="0" dy="2" result="offsetblur"/>
+                    <feComponentTransfer>
+                      <feFuncA type="linear" slope="0.3"/>
+                    </feComponentTransfer>
+                    <feMerge>
+                      <feMergeNode/>
+                      <feMergeNode in="SourceGraphic"/>
+                    </feMerge>
+                  </filter>
+                </React.Fragment>
               ))}
             </defs>
             <CartesianGrid 
@@ -303,22 +468,22 @@ export default function BarChart({ data, title }: BarChartProps) {
               stroke="#E5E7EB" 
               vertical={false}
               strokeWidth={1}
+              opacity={0.5}
             />
             <XAxis 
               dataKey={categoryKey} 
               tick={{ 
                 fill: '#6B7280', 
                 fontSize: isDateColumn ? 10 : 11, 
-                fontWeight: 500
+                fontWeight: 600
               }}
-              axisLine={{ stroke: '#D1D5DB', strokeWidth: 1 }}
-              tickLine={{ stroke: '#D1D5DB' }}
+              axisLine={{ stroke: '#D1D5DB', strokeWidth: 2 }}
+              tickLine={{ stroke: '#D1D5DB', strokeWidth: 1 }}
               angle={needsRotation ? -45 : 0}
               textAnchor={needsRotation ? 'end' : 'middle'}
               height={needsRotation ? 80 : 40}
-              interval={labelInterval}
+              interval={0}
               tickFormatter={(value) => {
-                // Ensure proper formatting
                 if (isDateColumn) {
                   return formatDateForChart(value);
                 }
@@ -327,29 +492,34 @@ export default function BarChart({ data, title }: BarChartProps) {
               }}
             />
             <YAxis 
-              tick={{ fill: '#6B7280', fontSize: 11, fontWeight: 500 }}
-              axisLine={{ stroke: '#D1D5DB', strokeWidth: 1 }}
-              tickLine={{ stroke: '#D1D5DB' }}
+              tick={{ fill: '#6B7280', fontSize: 11, fontWeight: 600 }}
+              axisLine={{ stroke: '#D1D5DB', strokeWidth: 2 }}
+              tickLine={{ stroke: '#D1D5DB', strokeWidth: 1 }}
               label={{ 
-                value: valueKey, 
+                value: formatColumnLabel(valueKey), 
                 angle: -90, 
                 position: 'insideLeft', 
                 fill: '#6B7280', 
-                style: { fontSize: '12px', fontWeight: 600 } 
+                style: { fontSize: '13px', fontWeight: 700 } 
               }}
-              width={70}
+              width={80}
             />
-            <Tooltip content={<CustomTooltip />} />
+            <Tooltip 
+              content={<CustomTooltip />}
+              cursor={{ fill: 'rgba(59, 130, 246, 0.1)' }}
+            />
             <Bar 
               dataKey={valueKey} 
-              radius={[6, 6, 0, 0]}
-              animationDuration={800}
+              radius={[8, 8, 0, 0]}
+              animationDuration={1200}
               animationEasing="ease-out"
+              isAnimationActive={true}
             >
               {chartData.map((entry, index) => (
                 <Cell 
                   key={`cell-${index}`} 
                   fill={`url(#powerbiGradient${index % GRADIENT_COLORS.length})`}
+                  style={{ filter: `url(#barShadow${index % GRADIENT_COLORS.length})` }}
                 />
               ))}
             </Bar>

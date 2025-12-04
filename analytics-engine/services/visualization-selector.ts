@@ -17,6 +17,49 @@ export function autoSelectVisualizationType(
   const firstRow = data[0];
   const keys = Object.keys(firstRow);
   
+  // Combine query content and user question for better context
+  const fullContext = `${queryContent || ''} ${userQuestion || ''}`.toLowerCase();
+  
+  // PRIORITY 1: Check for explicit chart type requests from user
+  // This takes precedence over automatic selection
+  if (userQuestion) {
+    const lowerQuestion = userQuestion.toLowerCase();
+    
+    // Check for explicit chart type requests
+    if (/bar\s+chart|bar\s+graph|bar\s+plot|bar\s+chart/i.test(lowerQuestion)) {
+      return 'bar_chart';
+    }
+    if (/pie\s+chart|pie\s+graph|pie\s+diagram|pie/i.test(lowerQuestion)) {
+      return 'pie_chart';
+    }
+    if (/line\s+chart|line\s+graph|line\s+plot|line/i.test(lowerQuestion)) {
+      return 'line_chart';
+    }
+    if (/scatter|scatter\s+plot|scatter\s+chart/i.test(lowerQuestion)) {
+      return 'scatter_plot';
+    }
+    if (/gauge|meter|indicator/i.test(lowerQuestion)) {
+      return 'gauge';
+    }
+    if (/table|list|tabular/i.test(lowerQuestion)) {
+      return 'table';
+    }
+    
+    // Check for generic "graph" or "chart" requests - prefer bar chart for distributions
+    if (/graph|chart|visualization|visualize/i.test(lowerQuestion)) {
+      // If it's a distribution query, use bar chart
+      if (/distribution|breakdown|split|grouped|by\s+\w+/i.test(lowerQuestion)) {
+        return 'bar_chart';
+      }
+      // If it's a trend/time query, use line chart
+      if (/trend|over\s+time|year|month|quarter|growth|change/i.test(lowerQuestion)) {
+        return 'line_chart';
+      }
+      // Default to bar chart for generic "graph" requests
+      return 'bar_chart';
+    }
+  }
+  
   // Detect numeric and string columns generically
   const numericKeys = keys.filter(key => {
     const value = firstRow[key];
@@ -31,9 +74,6 @@ export function autoSelectVisualizationType(
            isNaN(Number(value)) && 
            value !== '';
   });
-
-  // Combine query content and user question for better context
-  const fullContext = `${queryContent || ''} ${userQuestion || ''}`.toLowerCase();
   
   // Analyze query patterns generically
   const hasGroupBy = /group\s+by/i.test(queryContent);

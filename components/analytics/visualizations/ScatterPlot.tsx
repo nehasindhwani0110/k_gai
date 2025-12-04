@@ -78,20 +78,59 @@ export default function ScatterPlot({ data, title }: ScatterPlotProps) {
   const xMin = Math.min(...chartData.map(d => d.x));
   const yMin = Math.min(...chartData.map(d => d.y));
 
-  // Custom tooltip
+  // Enhanced custom tooltip with correlation details
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
       const point = payload[0].payload;
+      const distanceFromOrigin = Math.sqrt(point.x * point.x + point.y * point.y);
+      const avgX = chartData.reduce((sum, d) => sum + d.x, 0) / chartData.length;
+      const avgY = chartData.reduce((sum, d) => sum + d.y, 0) / chartData.length;
+      const distanceFromAvg = Math.sqrt(
+        Math.pow(point.x - avgX, 2) + Math.pow(point.y - avgY, 2)
+      );
+      
       return (
-        <div className="bg-white border border-gray-200 rounded-lg shadow-xl p-3 min-w-[150px]">
-          <p className="text-gray-600 text-xs font-medium mb-2">Data Point</p>
-          <div className="space-y-1">
-            <p className="text-gray-900 text-sm">
-              <span className="font-semibold">{xKey}:</span> {point.x.toLocaleString()}
+        <div className="bg-white border-2 border-gray-300 rounded-xl shadow-2xl p-4 min-w-[220px] backdrop-blur-sm">
+          {/* Header */}
+          <div className="mb-3 pb-3 border-b border-gray-200">
+            <p className="text-gray-500 text-xs font-semibold uppercase tracking-wide mb-1">
+              Data Point #{point.index + 1}
             </p>
-            <p className="text-gray-900 text-sm">
-              <span className="font-semibold">{yKey}:</span> {point.y.toLocaleString()}
-            </p>
+            <p className="text-gray-900 text-sm font-medium">Coordinates</p>
+          </div>
+          
+          {/* Values */}
+          <div className="space-y-3 mb-3">
+            <div className="flex items-center justify-between p-2 bg-blue-50 rounded-lg">
+              <span className="text-xs text-gray-600 font-medium">{xKey}</span>
+              <span className="text-lg font-bold text-blue-700">{point.x.toLocaleString()}</span>
+            </div>
+            <div className="flex items-center justify-between p-2 bg-purple-50 rounded-lg">
+              <span className="text-xs text-gray-600 font-medium">{yKey}</span>
+              <span className="text-lg font-bold text-purple-700">{point.y.toLocaleString()}</span>
+            </div>
+          </div>
+          
+          {/* Statistics */}
+          <div className="space-y-2 pt-3 border-t border-gray-100">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Distance from Origin</span>
+              <span className="text-sm font-semibold text-gray-700">
+                {distanceFromOrigin.toFixed(2)}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">vs Average</span>
+              <span className="text-sm font-semibold text-green-600">
+                {((distanceFromAvg / Math.sqrt(avgX * avgX + avgY * avgY)) * 100).toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-gray-500">Position</span>
+              <span className="text-sm font-semibold text-purple-600">
+                {point.x >= avgX ? 'Right' : 'Left'}, {point.y >= avgY ? 'Above' : 'Below'}
+              </span>
+            </div>
           </div>
         </div>
       );

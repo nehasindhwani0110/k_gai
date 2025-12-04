@@ -37,7 +37,7 @@ export async function saveQueryHistory(input: QueryHistoryInput): Promise<void> 
     let resultsToStore: string | null = null;
     if (input.results && input.results.length > 0) {
       const MAX_ROWS_TO_STORE = 100;
-      const MAX_RESULT_SIZE = 50000; // ~50KB limit for JSON string
+      const MAX_RESULT_SIZE = 45000; // ~45KB limit for JSON string (safer)
       
       if (input.results.length <= MAX_ROWS_TO_STORE) {
         // Small result set - store everything
@@ -61,21 +61,52 @@ export async function saveQueryHistory(input: QueryHistoryInput): Promise<void> 
           truncated: true,
           note: 'Results truncated due to size limits',
         });
+        
+        // Final safety check - if still too large, store minimal info
+        if (resultsToStore.length > MAX_RESULT_SIZE) {
+          resultsToStore = JSON.stringify({
+            totalRows: input.results.length,
+            truncated: true,
+            note: 'Results too large to store',
+          });
+        }
       }
     }
     
-    // Truncate queryContent if too long (MySQL TEXT can hold ~65KB, but we'll be safe)
-    // This is a safety measure - TEXT should handle most queries, but very long ones might need truncation
-    const MAX_QUERY_CONTENT_SIZE = 60000; // ~60KB limit
-    let queryContentToStore = input.queryContent;
-    if (queryContentToStore.length > MAX_QUERY_CONTENT_SIZE) {
-      console.warn(`Query content too long (${queryContentToStore.length} chars), truncating to ${MAX_QUERY_CONTENT_SIZE}`);
-      queryContentToStore = queryContentToStore.substring(0, MAX_QUERY_CONTENT_SIZE) + '\n... [truncated]';
+    // Truncate queryContent if too long
+    // MySQL TEXT type: 65,535 bytes max, but UTF-8 encoding can make this smaller
+    // Using 45KB as safe limit to account for UTF-8 multi-byte characters
+    const MAX_QUERY_CONTENT_SIZE = 45000; // ~45KB limit (safer for UTF-8)
+    let queryContentToStore = input.queryContent || '';
+    
+    // Calculate byte length for UTF-8 (more accurate than character length)
+    const byteLength = Buffer.byteLength(queryContentToStore, 'utf8');
+    if (byteLength > MAX_QUERY_CONTENT_SIZE) {
+      console.warn(`Query content too long (${byteLength} bytes, ${queryContentToStore.length} chars), truncating`);
+      // Truncate by bytes, not characters, to ensure we stay under limit
+      let truncated = '';
+      for (const char of queryContentToStore) {
+        const testStr = truncated + char;
+        if (Buffer.byteLength(testStr, 'utf8') > MAX_QUERY_CONTENT_SIZE - 50) { // Leave room for truncation message
+          break;
+        }
+        truncated = testStr;
+      }
+      queryContentToStore = truncated + '\n... [truncated]';
+    }
+    
+    // Also truncate userQuestion if too long (VARCHAR fields have limits)
+    // Default VARCHAR(191) in MySQL, but safer to limit to 500 chars
+    const MAX_USER_QUESTION_SIZE = 500; // Safe limit for user question
+    let userQuestionToStore = input.userQuestion || '';
+    if (userQuestionToStore.length > MAX_USER_QUESTION_SIZE) {
+      console.warn(`User question too long (${userQuestionToStore.length} chars), truncating`);
+      userQuestionToStore = userQuestionToStore.substring(0, MAX_USER_QUESTION_SIZE) + '... [truncated]';
     }
     
     await prisma.queryHistory.create({
       data: {
-        userQuestion: input.userQuestion,
+        userQuestion: userQuestionToStore,
         queryType: input.queryType,
         queryContent: queryContentToStore,
         sourceType: input.sourceType,
@@ -83,9 +114,36 @@ export async function saveQueryHistory(input: QueryHistoryInput): Promise<void> 
         results: resultsToStore,
       },
     });
-  } catch (error) {
-    console.error('Error saving query history:', error);
-    // Don't throw - history saving shouldn't break the main flow
+  } catch (error: any) {
+    // Check if it's a column size error
+    if (error?.code === 'P2000' && error?.meta?.column_name === 'queryContent') {
+      console.error(`Query content still too large after truncation. Original length: ${input.queryContent?.length || 0} chars`);
+      // Try with even smaller limit
+      const EMERGENCY_LIMIT = 30000; // 30KB emergency limit
+      let emergencyContent = input.queryContent || '';
+      if (emergencyContent.length > EMERGENCY_LIMIT) {
+        emergencyContent = emergencyContent.substring(0, EMERGENCY_LIMIT) + '\n... [truncated - query too large]';
+      }
+      
+      try {
+        await prisma.queryHistory.create({
+          data: {
+            userQuestion: (input.userQuestion || '').substring(0, 500),
+            queryType: input.queryType,
+            queryContent: emergencyContent,
+            sourceType: input.sourceType,
+            filePath: input.filePath || null,
+            results: null, // Skip results if query is too large
+          },
+        });
+      } catch (retryError) {
+        console.error('Failed to save query history even with emergency truncation:', retryError);
+        // Don't throw - history saving shouldn't break the main flow
+      }
+    } else {
+      console.error('Error saving query history:', error);
+      // Don't throw - history saving shouldn't break the main flow
+    }
   }
 }
 

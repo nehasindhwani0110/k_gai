@@ -39,9 +39,23 @@ export function parseDate(dateStr: string | null | undefined): Date | null {
     }
   }
   
-  // Try generic Date parsing
+  // CRITICAL: Don't parse pure numbers as dates (e.g., "100", "981")
+  // Pure numbers without date separators should not be treated as dates
+  const isPureNumber = /^\d+$/.test(str);
+  if (isPureNumber) {
+    // Reject pure numbers - they're not dates
+    return null;
+  }
+  
+  // Try generic Date parsing (only for strings that look like dates)
   const date = new Date(str);
   if (!isNaN(date.getTime())) {
+    // Additional validation: reject dates with years < 1900 for pure numeric strings
+    // This catches cases where "100" was parsed as year 100
+    const year = date.getFullYear();
+    if (year < 1900 && isPureNumber) {
+      return null;
+    }
     return date;
   }
   
