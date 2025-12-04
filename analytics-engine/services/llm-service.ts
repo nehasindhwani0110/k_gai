@@ -250,26 +250,75 @@ When the user question mentions time-related terms (month, year, day, date, peri
 
 **IF MODE IS 'DASHBOARD_METRICS':**
 
-The user is requesting dashboard metrics. Based on the provided data source metadata, generate 6-8 key analytical questions/metrics that:
-1. Cover ALL visualization types: bar_chart, line_chart, pie_chart, gauge, scatter_plot, table
-2. Are the MOST IMPORTANT and IMPACTFUL questions for THIS SPECIFIC dataset
-3. Are generic and domain-agnostic (work for any field: business, healthcare, education, finance, etc.)
-4. Use the actual column names and data structure from the metadata
-5. Generate diverse query types that naturally produce different visualization types
+Generate 8-10 sophisticated, domain-agnostic dashboard metrics that work with ANY dataset.
 
-**CRITICAL REQUIREMENTS:**
-- Generate at least 6 metrics, ideally 8 to ensure all chart types are covered
-- Each metric should use a different visualization type naturally
-- Questions should be based on the ACTUAL columns in the metadata, not generic templates
-- Make questions relevant to the data domain (infer from column names)
-- Prioritize questions that provide actionable insights
+**KEY PRINCIPLES:**
 
-**DASHBOARD METRICS GENERATION STRATEGY:**
+1. **NO DOMAIN ASSUMPTIONS**: Do NOT assume business, education, healthcare, etc.
 
-Analyze the metadata to understand:
-- What domain/field this data represents (infer from column names: student, patient, customer, product, transaction, etc.)
-- What are the key metrics/KPIs for this domain
-- What questions would be most valuable and actionable
+2. **USE ONLY PROVIDED COLUMNS**: Create metrics based on actual column names/types
+
+3. **INTELLIGENT METRICS**: Generate insights, not just basic counts
+
+4. **NATURAL VISUALIZATION**: Each metric should suit its chart type
+
+**METRIC TYPES (8-10 total):**
+
+- 2-3 Key Performance Indicators (gauge)
+
+- 2-3 Comparisons/Rankings (bar chart)
+
+- 1-2 Distributions (pie chart)
+
+- 1-2 Time Trends (line chart - if date columns exist)
+
+- 1 Correlation (scatter plot - if ≥2 numeric columns)
+
+- 1 Detailed List (table)
+
+**QUALITY REQUIREMENTS:**
+
+1. **INSIGHTFUL**: Show patterns, trends, comparisons
+
+2. **CONTEXT-RICH**: Include statistics (total, average, range, max, min)
+
+3. **ACTIONABLE**: Help understand data and make decisions
+
+4. **PROFESSIONAL**: Names like "Performance Distribution" not "Count of things"
+
+**EXAMPLES OF GOOD METRIC NAMES:**
+
+- "Average Score Distribution Across Ranges"
+
+- "Top Performing Entities by Metric"
+
+- "Status Distribution Analysis"
+
+- "Activity Trends Over Time"
+
+- "Metric X vs Metric Y Correlation"
+
+- "Detailed Performance Ranking"
+
+**BAD METRIC NAMES TO AVOID:**
+
+- "Total count"
+
+- "List of all items"
+
+- "Simple average"
+
+**ADAPTATION GUIDE:**
+
+1. Scan columns for: numeric values, dates, categories, names
+
+2. Use numeric columns for calculations (AVG, SUM, COUNT)
+
+3. Use date columns with DATE(), MONTH(), YEAR() functions
+
+4. Use category columns for GROUP BY
+
+5. Use name columns for labels in rankings
 
 Generate 6-8 metrics that NATURALLY produce different visualization types. Ensure you cover ALL types:
 
@@ -321,13 +370,7 @@ Generate 6-8 metrics that NATURALLY produce different visualization types. Ensur
 - Use simple aggregates for single metrics
 - visualization_type: Always set to "auto"
 
-**IMPORTANT**: Analyze the metadata to understand:
-- What domain/field this data represents (infer from column names)
-- What are the key metrics/KPIs for this domain
-- What questions would be most valuable for this specific dataset
-- Generate questions that are relevant and actionable
-
-For each metric, generate a SQL query that naturally produces the right visualization type, along with an insightful summary.
+**CRITICAL**: Create metrics that would be valuable for ANY dataset, focusing on universal analytical patterns.
 
 3. 🔍 Data Source Metadata (The Schema Context)
 
@@ -952,52 +995,331 @@ export async function generateDashboardMetrics(
   const { estimateMetadataTokens, isMetadataSizeSafe } = await import('../utils/token-counter');
   const model = process.env.OPENAI_MODEL || 'gpt-4-turbo-preview';
   
-  // Check if metadata needs reduction
-  let reducedMetadata = metadata;
-  if (!isMetadataSizeSafe(metadata, model)) {
-    console.log(`[LLM-SERVICE] ⚠️ Dashboard metadata too large (${estimateMetadataTokens(metadata)} tokens), applying reduction...`);
-    // For dashboard metrics, we need a broader view, so keep more tables but fewer columns
-    const allTables = metadata.tables || [];
+  // CRITICAL: Select BEST tables FIRST (not just first N tables)
+  // This ensures we use the most analytically valuable tables for dashboard metrics
+  const allTables = metadata.tables || [];
+  let selectedTables: string[] = [];
+  
+  if (allTables.length > 10) {
+    console.log(`[LLM-SERVICE] 🎯 Selecting BEST tables for dashboard (${allTables.length} total tables available)`);
+    selectedTables = await identifyKeyTablesForDashboard(metadata, 10);
+    console.log(`[LLM-SERVICE] ✅ Selected top ${selectedTables.length} tables: ${selectedTables.join(', ')}`);
+  } else {
+    selectedTables = allTables.map(t => t.name);
+    console.log(`[LLM-SERVICE] ✅ Using all ${selectedTables.length} tables (small database)`);
+  }
+  
+  // Create reduced metadata with ONLY the best tables
+  let reducedMetadata: DataSourceMetadata = {
+    ...metadata,
+    tables: allTables.filter(table => selectedTables.includes(table.name)),
+  };
+  
+  // Check if metadata needs further reduction (column-level)
+  if (!isMetadataSizeSafe(reducedMetadata, model)) {
+    console.log(`[LLM-SERVICE] ⚠️ Dashboard metadata too large (${estimateMetadataTokens(reducedMetadata)} tokens), reducing columns...`);
     reducedMetadata = {
-      ...metadata,
-      tables: allTables.slice(0, 10).map(table => ({
+      ...reducedMetadata,
+      tables: reducedMetadata.tables.map(table => ({
         ...table,
-        columns: table.columns.slice(0, 12), // Keep more columns for dashboard context
+        columns: table.columns.slice(0, 15), // Keep more columns for best tables
       })),
     };
     
     // If still too large, reduce further
     if (!isMetadataSizeSafe(reducedMetadata, model)) {
       reducedMetadata = {
-        ...metadata,
-        tables: allTables.slice(0, 5).map(table => ({
+        ...reducedMetadata,
+        tables: reducedMetadata.tables.map(table => ({
           ...table,
-          columns: table.columns.slice(0, 10),
+          columns: table.columns.slice(0, 12),
         })),
       };
     }
     
-    console.log(`[LLM-SERVICE] ✅ Reduced to ${reducedMetadata.tables.length} tables, ${estimateMetadataTokens(reducedMetadata)} tokens`);
+    console.log(`[LLM-SERVICE] ✅ Reduced columns: ${reducedMetadata.tables.length} best tables, ${estimateMetadataTokens(reducedMetadata)} tokens`);
+  } else {
+    console.log(`[LLM-SERVICE] ✅ Using ${reducedMetadata.tables.length} best tables with all columns (${estimateMetadataTokens(reducedMetadata)} tokens)`);
   }
   
-  const prompt = MASTER_PROMPT_TEMPLATE
-    .replace('{MODE}', 'DASHBOARD_METRICS')
-    .replace('{DATA_SOURCE_METADATA}', formatMetadata(reducedMetadata))
-    .replace('{USER_QUESTION}', 'Generate 8-10 diverse dashboard metrics covering different visualization types');
+  // Analyze schema GENERICALLY (no domain assumptions)
+  const schemaAnalysis = analyzeSchemaGenerically(reducedMetadata);
+  
+  const prompt = `You are an intelligent analytics engine. Your task is to analyze the schema provided below, detect the domain/business context, and generate 8-10 sophisticated dashboard metrics that focus on what's IMPORTANT for that domain.
+
+**STEP 1: DOMAIN DETECTION FROM SCHEMA**
+Before generating metrics, you MUST:
+1. Analyze the table names and column names in the metadata below
+2. Detect what domain/business this database represents (e.g., Education, Real Estate, Medical/Healthcare, Retail, Finance, etc.)
+3. Identify what metrics/questions would be MOST IMPORTANT for that domain
+4. Focus on business-critical metrics, NOT operational details
+
+**EXAMPLES OF DOMAIN DETECTION:**
+- If you see tables/columns like: student, class, attendance, fees, marks, teacher → This is EDUCATION domain
+  → Important metrics: Total students, top performers, fees collection, attendance rates, staff metrics
+  → AVOID: Unnecessary things like buses, time duration, etc.
+
+- If you see tables/columns like: property, customer, revenue, price, sale, commission → This is REAL ESTATE domain
+  → Important metrics: Revenue, customers, sales trends, property types, financial performance
+  → AVOID: Unnecessary operational details
+
+- If you see tables/columns like: patient, doctor, appointment, diagnosis, bill → This is MEDICAL domain
+  → Important metrics: Patient counts, staff metrics, appointments, billing, treatment patterns
+  → AVOID: Unnecessary operational details
+
+**IMPORTANT**: The tables provided below have been INTELLIGENTLY SELECTED as the BEST tables for analytics based on:
+- Rich numeric columns (for aggregations and KPIs)
+- Date/time columns (for trends and time series)
+- Category columns (for distributions and comparisons)
+- Column diversity (multiple data types for comprehensive analysis)
+
+**PRIORITIZE THESE TABLES**: Focus your metrics on these selected tables - they offer the most analytical value.
+
+**DATASET STRUCTURE:**
+
+${schemaAnalysis.structureSummary}
+
+**AVAILABLE DATA TYPES:**
+
+${schemaAnalysis.dataTypesSummary}
+
+**CRITICAL REQUIREMENTS:**
+
+1. **DOMAIN-AWARE METRIC GENERATION**:
+   - **FIRST**: Analyze the schema below to detect the domain/business context
+   - **THEN**: Generate metrics that are IMPORTANT for that domain
+   - Focus on business-critical insights (e.g., for education: students, performance, fees, attendance)
+   - AVOID unnecessary operational metrics (e.g., buses, time duration) unless they're core to the business
+   - Use ONLY the actual column names from metadata - do NOT invent column names
+   - Detect what's important from the schema structure itself (table names, column names, relationships)
+
+2. **NEVER INVENT COLUMN NAMES - CRITICAL RULE**:
+   - **MANDATORY**: Before using ANY column in a query, verify it EXISTS in the metadata tables below
+   - **NEVER** use column names that are NOT listed in the metadata
+   - **NEVER** assume common column names exist (e.g., "score", "name", "date", "status")
+   - **ALWAYS** check the metadata first - if a column doesn't exist, find an alternative that DOES exist OR skip that metric
+   - **WRONG**: Using "score" when metadata shows "totalMarks" or "percentage"
+   - **WRONG**: Using "name" when metadata shows "title" or "label"
+   - **CORRECT**: Use the EXACT column name from metadata (e.g., if metadata shows "totalMarks", use "totalMarks", not "score")
+
+3. **USE ONLY WHAT'S ACTUALLY AVAILABLE**:
+   - Create metrics based ONLY on the column names and types provided in the metadata
+   - If a column type doesn't exist (e.g., no date columns), skip that metric type
+   - Adapt your queries to work with whatever columns actually exist
+   - Don't force domain-specific concepts onto generic data
+
+4. **INTELLIGENT METRIC SELECTION** (8-10 total):
+
+   After detecting the domain from schema, generate metrics that are IMPORTANT for that domain:
+   
+   - 2-3 Key Performance Indicators (gauge charts) - Focus on the MOST IMPORTANT KPIs for the detected domain
+   - 2-3 Ranking/Comparison analyses (bar charts) - Show top performers, comparisons, rankings relevant to the domain
+   - 1-2 Distribution/Breakdown analyses (pie/bar charts) - Show distributions of important categories
+   - 1-2 Trend/Time analyses (line charts - only if date columns exist) - Show trends over time for important metrics
+   - 1 Correlation analysis (scatter plot - only if ≥2 numeric columns) - If relevant to the domain
+   - 1 Detailed list (table) - Show detailed view of important entities
+
+   **CRITICAL**: Choose metrics that answer IMPORTANT questions for the detected domain. For example:
+   - Education: "Total Students", "Top Performers", "Fees Collection Status", "Attendance Trends", "Staff Distribution"
+   - Real Estate: "Total Revenue", "Top Customers", "Sales Trends", "Property Type Distribution", "Commission Analysis"
+   - Medical: "Total Patients", "Appointment Trends", "Staff Distribution", "Billing Status", "Treatment Patterns"
+   
+   **AVOID**: Metrics about unnecessary operational details (buses, time duration, etc.) unless they're explicitly important in the schema
+
+**METRIC QUALITY PRINCIPLES:**
+
+1. **INSIGHTFUL**: Not just counts, but meaningful aggregations
+
+2. **ACTIONABLE**: Helps understand patterns and make decisions
+
+3. **CONTEXT-RICH**: Include statistics (totals, averages, ranges) in insight summaries
+
+4. **NATURAL VISUALIZATION**: Each metric should lead naturally to its chart type
+
+**GENERIC METRIC TEMPLATES (ADAPT TO ACTUAL COLUMNS):**
+
+1. **GAUGE (Performance KPI)**:
+
+   Query: "SELECT AVG([numeric_column]) as avg_value FROM [table]"
+
+   Name: "Average [metric_column] Performance"
+
+   Insight: "Overall average [metric] across all records: [value]"
+
+2. **BAR CHART (Ranking)**:
+
+   Query: "SELECT [category_column], AVG([value_column]) as avg_value FROM [table] GROUP BY [category_column] ORDER BY avg_value DESC LIMIT 10"
+
+   Name: "Top 10 [categories] by Average [metric]"
+
+   Insight: "Ranking shows [top_category] has highest average at [value]"
+
+3. **PIE CHART (Distribution)**:
+
+   Query: "SELECT [status_column], COUNT(*) as count FROM [table] GROUP BY [status_column]"
+
+   Name: "[Status] Distribution"
+
+   Insight: "[Most_common_status] accounts for [percentage]% of all records"
+
+4. **LINE CHART (Trend)**:
+
+   Query: "SELECT DATE([date_column]) as date, COUNT(*) as count FROM [table] GROUP BY DATE([date_column]) ORDER BY date"
+
+   Name: "[Activity] Trends Over Time"
+
+   Insight: "Shows daily patterns with peak on [peak_day]"
+
+5. **SCATTER PLOT (Correlation)**:
+
+   Query: "SELECT [numeric_column1], [numeric_column2] FROM [table] LIMIT 100"
+
+   Name: "[Metric1] vs [Metric2] Relationship"
+
+   Insight: "Analyzes correlation between two key metrics"
+
+6. **TABLE (Detailed List)**:
+
+   Query: "SELECT [name_column], [key_metric1], [key_metric2] FROM [table] ORDER BY [key_metric1] DESC LIMIT 20"
+
+   Name: "Top [items] by [metric]"
+
+   Insight: "Detailed ranking with multiple metrics for comparison"
+
+**ADAPTATION RULES:**
+
+1. **DOMAIN ANALYSIS PROCESS**:
+   - **Step 1**: Read ALL table names and column names in the metadata below
+   - **Step 2**: Identify patterns that suggest a domain (e.g., "student", "patient", "property", "customer")
+   - **Step 3**: Determine what questions/metrics would be MOST IMPORTANT for that domain
+   - **Step 4**: Generate metrics that answer those important questions using ONLY actual column names
+
+2. **COLUMN PATTERN DETECTION**:
+   - **Numeric metrics**: columns with numbers, scores, amounts, percentages, counts
+   - **Categories**: columns with limited distinct values (status, type, category, class)
+   - **Entities**: columns with names, IDs, labels
+   - **Dates**: columns with date/time types or names containing date/time
+
+3. **METRIC PRIORITIZATION**:
+   - Focus on metrics that provide BUSINESS VALUE for the detected domain
+   - Prioritize metrics that answer important questions (e.g., "How many students?", "What's the revenue?", "Who are the top performers?")
+   - Avoid metrics about operational details unless they're core to the business
+   - Choose the MOST APPROPRIATE columns for each metric type from the actual schema
+
+4. If a column type doesn't exist, skip that metric type
+
+**QUERY GENERATION RULES:**
+
+1. **COLUMN VALIDATION (MANDATORY BEFORE EVERY QUERY)**:
+   - **STEP 1**: Look at the metadata tables below
+   - **STEP 2**: Find the EXACT column name you want to use
+   - **STEP 3**: Verify it exists in the table you're querying
+   - **STEP 4**: Use ONLY that exact column name (case-sensitive, spelling-sensitive)
+   - **IF COLUMN DOESN'T EXIST**: Find the closest matching column in metadata OR skip that metric entirely
+   - **NEVER** use column names like "score", "name", "date" without verifying they exist first
+
+2. **USE EXACT COLUMN NAMES FROM METADATA**:
+   - Copy column names EXACTLY as shown in metadata (including case, spelling, underscores)
+   - Don't modify column names (e.g., don't change "totalMarks" to "score")
+   - Don't assume synonyms exist (e.g., don't use "score" if metadata shows "totalMarks")
+
+3. **FOR DATES**: Use DATE() function for daily trends, MONTH() for monthly, YEAR() for yearly
+   - **ONLY** if date columns actually exist in metadata
+   - Verify date column exists before using it
+
+4. **INCLUDE AGGREGATE FUNCTIONS** where appropriate (AVG, SUM, COUNT, MAX, MIN)
+
+5. **ADD ORDER BY** for rankings
+
+6. **USE LIMIT** for "Top N" queries
+
+7. **USE GROUP BY** for distributions
+
+8. **SET visualization_type** to "auto"
+
+**COLUMN VALIDATION EXAMPLES**:
+- ❌ WRONG: Query uses "score" but metadata shows table has "totalMarks" and "percentage" → Use "totalMarks" or "percentage" instead
+- ❌ WRONG: Query uses "name" but metadata shows "title" → Use "title" instead
+- ❌ WRONG: Query uses "date" but metadata shows "createdAt" → Use "createdAt" instead
+- ✅ CORRECT: Metadata shows table "QuizAttempt" has columns: "studentId", "score", "timeTaken" → Use these exact names
+- ✅ CORRECT: Metadata shows table "AIQuiz" has columns: "subject", "totalMarks" → Use "totalMarks", NOT "score"
+
+**DATA SOURCE METADATA:**
+
+**⚠️ CRITICAL: ANALYZE THIS METADATA TO DETECT DOMAIN AND GENERATE IMPORTANT METRICS ⚠️**
+
+The metadata below shows the EXACT tables and columns available. You MUST:
+
+1. **DOMAIN DETECTION PHASE**:
+   - Read through ALL tables and columns listed below
+   - Analyze table names and column names to detect the domain/business context
+   - Identify what metrics/questions would be MOST IMPORTANT for that domain
+   - Example: If you see "Student", "Class", "Attendance", "Fees" → This is Education → Focus on students, performance, fees, attendance
+
+2. **METRIC GENERATION PHASE**:
+   - Identify which columns are numeric, which are dates, which are categories
+   - Generate metrics that answer IMPORTANT questions for the detected domain
+   - Use ONLY the column names shown below - do NOT invent or assume column names
+   - Focus on business-critical metrics, avoid unnecessary operational details
+   - If you need a column that doesn't exist, find the closest match OR skip that metric
+
+${formatMetadata(reducedMetadata)}
+
+**OUTPUT FORMAT:**
+
+{
+  "dashboard_metrics": [
+    {
+      "metric_name": "[Insightful, Generic Metric Name]",
+      "query_type": "SQL_QUERY",
+      "query_content": "[Query using exact column names from metadata]",
+      "visualization_type": "auto",
+      "insight_summary": "[Brief insight including key statistics like total, average, range if applicable]"
+    }
+    // 7-9 more metrics
+  ]
+}
+
+**FINAL VALIDATION CHECKLIST (MANDATORY FOR EVERY METRIC)**:
+
+Before generating each metric, verify:
+1. ✅ Domain detected from schema analysis (what domain does this database represent?)
+2. ✅ Metric answers an IMPORTANT question for that domain (not just any metric)
+3. ✅ All column names used in the query EXIST in the metadata tables above
+4. ✅ Table names match EXACTLY what's in metadata
+5. ✅ Column types match the query (e.g., using numeric columns for AVG, date columns for DATE())
+6. ✅ Metric focuses on business value, avoids unnecessary operational details
+7. ✅ If a required column doesn't exist, the metric is skipped or adapted
+
+**CRITICAL REMINDERS**:
+- **DETECT DOMAIN FIRST** - Analyze schema to understand what domain this is (Education, Real Estate, Medical, etc.)
+- **FOCUS ON IMPORTANT METRICS** - Generate metrics that matter for that domain (students/revenue/patients, not buses/time duration)
+- **NEVER INVENT COLUMN NAMES** - If metadata shows "totalMarks", use "totalMarks", NOT "score"
+- **VERIFY EVERY COLUMN** - Check metadata before using any column name
+- **USE ACTUAL COLUMN NAMES** - Work with the actual schema, detect what's important from table/column names
+- **ADAPT OR SKIP** - If a column doesn't exist, find an alternative or skip that metric type
+- **EXACT MATCHES ONLY** - Use column names exactly as shown in metadata
+
+**IMPORTANT**: 
+1. First, analyze the schema below to detect the domain/business context
+2. Then, generate metrics that answer IMPORTANT questions for that domain
+3. Focus on business-critical insights (students, revenue, patients, etc.)
+4. Avoid unnecessary operational details (buses, time duration, etc.)
+5. Use ONLY the exact column names that exist in the metadata provided above`;
 
   const response = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
     messages: [
       {
         role: 'system',
-        content: 'You are an expert analytics dashboard generator that works with ANY type of data (business, healthcare, education, finance, retail, etc.). Analyze the provided metadata to understand the data domain and column structure. Generate 8-10 key dashboard metrics that: 1) Cover ALL visualization types (gauge, bar_chart, pie_chart, line_chart, scatter_plot, table), 2) Are the MOST IMPORTANT questions for THIS specific dataset, 3) Use actual column names from metadata, 4) Generate diverse query types that naturally produce different visualizations, 5) Handle date/time queries properly using YEAR(), MONTH(), DAY(), DATE() functions when temporal analysis is needed, 6) CRITICAL: Only generate queries that will return data - use columns that exist in the metadata, avoid filters that might exclude all rows, use COUNT(*) or aggregations that will always return results, prefer queries that show distributions or aggregations rather than specific filters that might be empty, 7) IMPORTANT: Use clear column aliases (e.g., "SELECT COUNT(*) as count, category as category_name") to ensure charts can properly identify data columns. Always return valid JSON only.',
+        content: 'You are an intelligent analytics dashboard generator that analyzes schemas to detect domains and generates domain-relevant metrics. **CRITICAL RULES**: 1) FIRST: Analyze the schema (table names, column names) to detect what domain/business this database represents (Education, Real Estate, Medical, etc.). 2) THEN: Generate metrics that answer IMPORTANT questions for that domain (e.g., for Education: students, performance, fees, attendance; for Real Estate: revenue, customers, sales; for Medical: patients, staff, appointments). 3) NEVER invent column names - ONLY use columns that EXIST in the metadata provided. Before using ANY column, you MUST verify it exists in the metadata tables. 4) Work with ONLY the actual column names provided - if metadata shows "totalMarks", use "totalMarks", NOT "score". 5) Focus on business-critical metrics, avoid unnecessary operational details (buses, time duration) unless core to the business. 6) Detect what\'s important from the schema structure itself - use table/column names to understand what matters. 7) Verify every column name against metadata before using it in queries. You create sophisticated metrics that reveal important domain-specific insights using ONLY the exact column names from metadata. Always return valid JSON only.',
       },
       {
         role: 'user',
         content: prompt,
       },
     ],
-    temperature: 0.3, // Slightly higher for more creative/diverse metric generation
+    temperature: 0.3,
     response_format: { type: 'json_object' },
   });
 
@@ -1007,6 +1329,59 @@ export async function generateDashboardMetrics(
   }
 
   return JSON.parse(content) as DashboardMetricsResponse;
+}
+
+/**
+ * Helper function: Generic schema analysis
+ * Analyzes schema without making domain assumptions
+ */
+function analyzeSchemaGenerically(metadata: DataSourceMetadata): {
+  structureSummary: string;
+  dataTypesSummary: string;
+} {
+  const tables = metadata.tables || [];
+  
+  // Count different column types
+  let numericCols = 0;
+  let dateCols = 0;
+  let textCols = 0;
+  let categoryCols = 0;
+  
+  tables.forEach(table => {
+    table.columns?.forEach(col => {
+      const type = (col.type || '').toUpperCase();
+      const name = (col.name || '').toLowerCase();
+      
+      // Check for numeric types
+      if (['INT', 'INTEGER', 'BIGINT', 'DECIMAL', 'FLOAT', 'DOUBLE', 'NUMERIC', 'REAL'].some(t => type.includes(t))) {
+        numericCols++;
+      }
+      // Check for date types
+      else if (['DATE', 'DATETIME', 'TIMESTAMP', 'TIME'].some(t => type.includes(t)) || 
+               name.includes('date') || name.includes('time') || name.includes('created') || name.includes('updated')) {
+        dateCols++;
+      }
+      // Check for category columns (based on naming patterns)
+      else if (name.includes('status') || name.includes('type') || name.includes('category') || 
+               name.includes('class') || name.includes('group')) {
+        categoryCols++;
+        textCols++;
+      }
+      else {
+        textCols++;
+      }
+    });
+  });
+  
+  const structureSummary = `Tables: ${tables.length}\nColumns by type: Numeric (${numericCols}), Date/Time (${dateCols}), Text/Category (${textCols})`;
+  
+  const dataTypesSummary = `Available for analysis:
+${numericCols > 0 ? '✓ Numeric metrics (for KPIs, averages, sums)' : '✗ No numeric columns'}
+${dateCols > 0 ? '✓ Date/Time data (for trends over time)' : '✗ No date columns'}
+${categoryCols > 0 ? '✓ Category columns (for distributions, comparisons)' : '✗ No obvious category columns'}
+${textCols > 0 ? '✓ Text columns (for labels, names, entities)' : '✗ No text columns'}`;
+  
+  return { structureSummary, dataTypesSummary };
 }
 
 /**
@@ -1297,10 +1672,12 @@ export async function generateAdhocQueryWithLangGraphAgent(
 /**
  * Identifies key tables for dashboard metrics generation
  * 
- * For dashboard metrics, we want tables that have:
- * - Numeric columns (for aggregations)
- * - Date columns (for time series)
- * - Category columns (for distributions)
+ * Intelligently scores and selects the BEST tables for analytics based on:
+ * - Numeric columns (for aggregations, KPIs)
+ * - Date columns (for time series, trends)
+ * - Category columns (for distributions, comparisons)
+ * - Column diversity (more columns = more analytical possibilities)
+ * - Avoids lookup/reference tables (tables with only IDs and names)
  */
 async function identifyKeyTablesForDashboard(
   metadata: DataSourceMetadata,
@@ -1313,45 +1690,127 @@ async function identifyKeyTablesForDashboard(
     return allTables.map(t => t.name);
   }
 
-    // Score tables based on their usefulness for dashboard metrics
-    const tableScores = allTables.map(table => {
-      let score = 0;
-      const columns = table.columns || [];
-      
-      // Check for numeric columns (for aggregations)
-      const numericColumns = columns.filter(col => 
-        ['INT', 'INTEGER', 'BIGINT', 'DECIMAL', 'FLOAT', 'DOUBLE', 'NUMERIC', 'REAL'].includes(
-          col.type?.toUpperCase() || ''
-        ) || col.name?.match(/\b(count|total|sum|avg|amount|price|value|score|rating|percentage)\b/i)
+  // Score tables based on their analytical value for dashboard metrics
+  const tableScores = allTables.map(table => {
+    let score = 0;
+    const columns = table.columns || [];
+    const columnNames = columns.map(col => (col.name || '').toLowerCase());
+    const columnTypes = columns.map(col => (col.type || '').toUpperCase());
+    
+    // 1. NUMERIC COLUMNS (High value - for aggregations, KPIs, calculations)
+    const numericColumns = columns.filter(col => {
+      const type = (col.type || '').toUpperCase();
+      const name = (col.name || '').toLowerCase();
+      return (
+        ['INT', 'INTEGER', 'BIGINT', 'DECIMAL', 'FLOAT', 'DOUBLE', 'NUMERIC', 'REAL'].some(t => type.includes(t)) ||
+        name.match(/\b(count|total|sum|avg|amount|price|value|score|rating|percentage|cost|revenue|profit|quantity|duration|distance|weight|height|age|salary|budget|balance|fee|charge|discount|tax)\b/i)
       );
-      score += numericColumns.length * 2;
-      
-      // Check for date columns (for time series)
-      const dateColumns = columns.filter(col =>
-        ['DATE', 'DATETIME', 'TIMESTAMP', 'TIME'].includes(col.type?.toUpperCase() || '') ||
-        col.name?.match(/\b(date|time|created|updated|timestamp|period|year|month|day)\b/i)
+    });
+    score += numericColumns.length * 5; // High weight for numeric columns
+    
+    // Bonus: Multiple numeric columns = more analytical possibilities
+    if (numericColumns.length >= 3) score += 10;
+    if (numericColumns.length >= 5) score += 15;
+    
+    // 2. DATE/TIME COLUMNS (Very high value - for trends, time series)
+    const dateColumns = columns.filter(col => {
+      const type = (col.type || '').toUpperCase();
+      const name = (col.name || '').toLowerCase();
+      return (
+        ['DATE', 'DATETIME', 'TIMESTAMP', 'TIME'].some(t => type.includes(t)) ||
+        name.match(/\b(date|time|created|updated|timestamp|period|year|month|day|started|ended|completed|due|deadline|schedule)\b/i)
       );
-      score += dateColumns.length * 3; // Date columns are very valuable
+    });
+    score += dateColumns.length * 8; // Very high weight for date columns
     
-    // Check for category/status columns (for distributions)
-    const categoryColumns = columns.filter(col =>
-      col.name?.match(/\b(status|type|category|class|group|region|state|country|department|stream)\b/i)
-    );
-    score += categoryColumns.length * 1.5;
+    // 3. CATEGORY/STATUS COLUMNS (Medium-high value - for distributions, comparisons)
+    const categoryColumns = columns.filter(col => {
+      const name = (col.name || '').toLowerCase();
+      return name.match(/\b(status|type|category|class|group|region|state|country|department|stream|level|grade|priority|stage|phase|role|position|rank|tier|segment)\b/i);
+    });
+    score += categoryColumns.length * 3;
     
-    // Prefer tables with more columns (more data to analyze)
-    score += columns.length * 0.1;
+    // 4. COLUMN DIVERSITY (More columns = more analytical possibilities)
+    // But penalize if it's just IDs and names (lookup table)
+    const hasOnlyIdsAndNames = columns.length <= 3 && 
+      columnNames.every(name => name.includes('id') || name.includes('name') || name.includes('code'));
     
-    return { name: table.name, score };
+    if (!hasOnlyIdsAndNames) {
+      score += columns.length * 0.5; // Reward tables with more diverse columns
+    } else {
+      score -= 20; // Penalize lookup/reference tables
+    }
+    
+    // 5. ANALYTICAL COLUMN PATTERNS (Bonus for columns that suggest analytics)
+    const analyticalPatterns = [
+      /\b(avg|average|mean|median|total|sum|count|max|min|range|variance|stddev)\b/i,
+      /\b(performance|efficiency|utilization|rate|ratio|percentage|percent)\b/i,
+      /\b(trend|growth|change|difference|comparison|ranking)\b/i,
+      /\b(score|rating|grade|level|tier|rank)\b/i,
+    ];
+    
+    let analyticalColumnCount = 0;
+    columnNames.forEach(name => {
+      if (analyticalPatterns.some(pattern => pattern.test(name))) {
+        analyticalColumnCount++;
+      }
+    });
+    score += analyticalColumnCount * 4;
+    
+    // 6. AVOID LOOKUP/REFERENCE TABLES
+    // Tables with only 1-2 columns are likely lookup tables
+    if (columns.length <= 2) {
+      score -= 30;
+    }
+    
+    // 7. PREFER TABLES WITH MULTIPLE COLUMN TYPES
+    const hasNumeric = numericColumns.length > 0;
+    const hasDate = dateColumns.length > 0;
+    const hasCategory = categoryColumns.length > 0;
+    const hasText = columns.some(col => {
+      const type = (col.type || '').toUpperCase();
+      return type.includes('VARCHAR') || type.includes('TEXT') || type.includes('CHAR');
+    });
+    
+    let typeDiversity = 0;
+    if (hasNumeric) typeDiversity++;
+    if (hasDate) typeDiversity++;
+    if (hasCategory) typeDiversity++;
+    if (hasText) typeDiversity++;
+    
+    // Bonus for tables with multiple column types (more analytical possibilities)
+    if (typeDiversity >= 3) score += 15;
+    if (typeDiversity >= 4) score += 25;
+    
+    // 8. AVOID SYSTEM/METADATA TABLES
+    const tableNameLower = (table.name || '').toLowerCase();
+    if (tableNameLower.includes('log') || 
+        tableNameLower.includes('audit') || 
+        tableNameLower.includes('temp') ||
+        tableNameLower.includes('cache') ||
+        tableNameLower.includes('session')) {
+      score -= 15; // Reduce priority for system tables
+    }
+    
+    return { name: table.name, score, details: {
+      numericColumns: numericColumns.length,
+      dateColumns: dateColumns.length,
+      categoryColumns: categoryColumns.length,
+      totalColumns: columns.length,
+      typeDiversity,
+    }};
   });
   
-  // Sort by score and take top tables
+  // Sort by score (highest first) and take top tables
   tableScores.sort((a, b) => b.score - a.score);
-  const selectedTables = tableScores.slice(0, maxTables).map(t => t.name);
+  const selectedTables = tableScores.slice(0, maxTables);
   
-  console.log(`[LLM-SERVICE] Selected ${selectedTables.length} key tables for dashboard: ${selectedTables.join(', ')}`);
+  console.log(`[LLM-SERVICE] 🎯 Selected ${selectedTables.length} BEST tables for dashboard:`);
+  selectedTables.forEach((table, idx) => {
+    console.log(`[LLM-SERVICE]   ${idx + 1}. ${table.name} (score: ${table.score.toFixed(1)}, numeric: ${table.details.numericColumns}, date: ${table.details.dateColumns}, category: ${table.details.categoryColumns}, columns: ${table.details.totalColumns})`);
+  });
   
-  return selectedTables;
+  return selectedTables.map(t => t.name);
 }
 
 /**
